@@ -2,7 +2,7 @@
 # tcl synth_pcbfpga.tcl {out.json}
 yosys -import
 
-set LUT_K 4
+set LUT_K [lindex $argv 1]
 
 read_verilog -lib [file dirname [file normalize $argv0]]/pcbfpga_prims.v
 hierarchy -check -top top
