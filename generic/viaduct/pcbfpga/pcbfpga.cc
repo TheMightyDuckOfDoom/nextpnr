@@ -65,6 +65,7 @@ struct PcbfpgaImpl : ViaductAPI
         ViaductAPI::init(ctx);
         h.init(ctx);
         init_tiles();
+        init_pips();
         log_info("pcbFPGA: Architecture initialized.\n");
     }
 
@@ -77,13 +78,30 @@ struct PcbfpgaImpl : ViaductAPI
                 CellTypePort(id_OUTBUF, id_PAD),
         };
         h.remove_nextpnr_iobs(top_ports);
-        // Replace constants with LUTs
-        const dict<IdString, Property> vcc_params = {{id_INIT, Property((1 << (1 << K)) - 1, (1 << K))}};
-        const dict<IdString, Property> gnd_params = {{id_INIT, Property(0, 1 << K)}};
-        h.replace_constants(CellTypePort(id_LUT, id_F), CellTypePort(id_LUT, id_F), vcc_params, gnd_params);
+
+        // Replace constants drivers
+        h.replace_constants(CellTypePort(id_VCC_DRV, id_ONE), CellTypePort(id_GND_DRV, id_ZERO));
+        
+        // Remove unused VCC net and driver
+        auto& vcc_net  = ctx->nets.at(ctx->id("$PACKER_VCC"));
+        if (vcc_net->users.empty()) {
+            log_info("pcbFPGA: VCC net has no users\n");
+            ctx->nets.erase(vcc_net->name);
+            ctx->cells.erase(ctx->id("$PACKER_VCC_DRV"));
+            log_info("pcbFPGA: Removed VCC net and driver\n");
+        }
+
+        // Remove unused GND net and driver 
+        auto& gnd_net  = ctx->nets.at(ctx->id("$PACKER_GND"));
+        if (gnd_net->users.empty()) {
+            log_info("pcbFPGA: GND net has no users\n");
+            ctx->nets.erase(gnd_net->name);
+            ctx->cells.erase(ctx->id("$PACKER_GND_DRV"));
+            log_info("pcbFPGA: Removed GND net and driver\n");
+        }
+
         // Constrain directly connected LUTs and FFs together to use dedicated resources
-        int lutffs = h.constrain_cell_pairs(pool<CellTypePort>{{id_LUT, id_F}}, pool<CellTypePort>{{id_DFF, id_D}}, 1,
-                                            false);
+        int lutffs = h.constrain_cell_pairs(pool<CellTypePort>{{id_LUT, id_F}}, pool<CellTypePort>{{id_DFF, id_D}}, 1, false);
         log_info("pcbFPGA: Constrained %d LUTFF pairs.\n", lutffs);
         log_info("pcbFPGA: Packing complete.\n");
     }
@@ -103,11 +121,10 @@ struct PcbfpgaImpl : ViaductAPI
     // Parameters that can be referenced in the JSON
     json11::Json params_json;
 
-    // Tile types at position
-    std::vector<std::vector<std::string>> tile_types;
-
+    // Tile wire map: Maps Bel names to a list of wires
     typedef dict<std::string, std::vector<WireId>> TileWireMap_t;
 
+    std::vector<std::vector<std::string>> tile_types;
     std::vector<std::vector<TileWireMap_t>> wires_per_tile;
 
     // Get an integer from a JSON object
@@ -182,17 +199,15 @@ struct PcbfpgaImpl : ViaductAPI
         log_info("pcbFPGA: \tLUT Size: %d\n", K);
     }
 
-    PipId add_pip(Loc loc, WireId src, WireId dst, delay_t delay = 0.05)
-    {
-        IdStringList name = IdStringList::concat(ctx->getWireName(dst), ctx->getWireName(src));
-        return ctx->addPip(name, ctx->id("PIP"), src, dst, delay, loc);
-    }
-    json11::Json find_tile_json(const std::string &tile_type)
+    json11::Json find_tile_json(const std::string &tile_type, bool required = true)
     {
         for (const auto &tile : tiles_json.array_items()) {
             if (tile["tile_type"].string_value() == tile_type) {
                 return tile;
             }
+        }
+        if (required) {
+            log_error("pcbFPGA: Config JSON missing required %s tile.\n", tile_type.c_str());
         }
         return json11::Json();
     }
@@ -205,14 +220,8 @@ struct PcbfpgaImpl : ViaductAPI
 
         json11::Json iob_tile = find_tile_json("IOB");
         json11::Json clb_tile = find_tile_json("CLB");
-        if (iob_tile.is_null()) {
-            log_error("pcbFPGA: Config JSON missing required IOB tile.\n");
-            return;
-        }
-        if (clb_tile.is_null()) {
-            log_error("pcbFPGA: Config JSON missing required CLB tile.\n");
-            return;
-        }
+        json11::Json icb_tile = find_tile_json("icb");
+        json11::Json ccb_tile = find_tile_json("ccb");
 
         log_info("pcbFPGA: Creating tiles...\n");
         // IOB: Input Output Buffers -> Next to ICBs
@@ -269,13 +278,13 @@ struct PcbfpgaImpl : ViaductAPI
                 if (mesh_utils::is_ccb(x, y, X, Y)) {
                     NPNR_ASSERT(row_tile_types.at(x) == "");
                     ccb_count++;
-                    row_tile_types.at(x) = "ccb";
+                    row_tile_types.at(x) = create_tile_from_json(x, y, ccb_tile);
                     continue;
                 }
                 if (mesh_utils::is_icb(x, y, X, Y)) {
                     NPNR_ASSERT(row_tile_types.at(x) == "");
                     icb_count++;
-                    row_tile_types.at(x) = "icb";
+                    row_tile_types.at(x) = create_tile_from_json(x, y, icb_tile);
                 }
             }
         }
@@ -352,25 +361,28 @@ struct PcbfpgaImpl : ViaductAPI
         return parameter;
     }
 
-    void create_bel_inout_wire(int x, int y, int z, const std::string& inout_name, const std::string& bel_name, BelId b, TileWireMap_t& tile_wires, const PortType io_type) {
+    void create_bel_inout_wire(int x, int y, const std::string& inout_name, const std::string& bel_name, BelId b, TileWireMap_t& tile_wires, const PortType io_type) {
         int start, end;
         const std::string name = parse_name_range(inout_name, end, start);
 
         if ((start == -1) || (end == -1)) {
-            log_info("pcbFPGA: \t\t\tAdding %s to BEL %s%d\n", name.c_str(), bel_name.c_str(), z);
+            log_info("pcbFPGA: \t\t\tAdding %s to BEL %s\n", name.c_str(), bel_name.c_str());
 
-            IdString input_id = ctx->idf("%s", name.c_str());
-            WireId wire = ctx->addWire(h.xy_id(x, y, ctx->idf("%s%d", name.c_str(), z)), input_id, x, y);
-            tile_wires[name].push_back(wire);
+            IdString input_id = ctx->id(name);
+            std::string wire_name = bel_name + "_" + name;
+            WireId wire = ctx->addWire(h.xy_id(x, y, ctx->id(wire_name)), input_id, x, y);
+            tile_wires[bel_name].push_back(wire);
 
             ctx->addBelPin(b, input_id, wire, io_type);
         } else {
             for (int i = start; i <= end; i++) {
-                log_info("pcbFPGA: \t\t\tAdding %s[%d] to BEL %s%d\n", name.c_str(), i, bel_name.c_str(), z);
+                log_info("pcbFPGA: \t\t\tAdding %s[%d] to BEL %s\n", name.c_str(), i, bel_name.c_str());
 
-                IdString input_id = ctx->idf("%s[%d]", name.c_str(), i);
-                WireId wire = ctx->addWire(h.xy_id(x, y, ctx->idf("%s[%d]%d", name.c_str(), i, z)), input_id, x, y);
-                tile_wires[name].push_back(wire);
+                std::string input_name = name + "[" + std::to_string(i) + "]";
+                IdString input_id = ctx->id(input_name);
+                std::string wire_name = bel_name + "_" + input_name;
+                WireId wire = ctx->addWire(h.xy_id(x, y, ctx->id(wire_name)), input_id, x, y);
+                tile_wires[bel_name].push_back(wire);
 
                 ctx->addBelPin(b, input_id, wire, io_type);
             }
@@ -399,7 +411,8 @@ struct PcbfpgaImpl : ViaductAPI
             // Create num_per_tile BELs
             for (int z = bel_count; z < bel_count + num_per_tile; z++) {
                 // Unique BEL ID at this location
-                IdString unique_bel_id = ctx->idf("%s%d", bel_name.c_str(), z);
+                std::string unique_bel_name = bel_name + std::to_string(z);
+                IdString unique_bel_id = ctx->id(unique_bel_name);
 
                 log_info("pcbFPGA: \t\tCreating BEL %s%d at (%d, %d, %d)\n", bel_name.c_str(), z, x, y, z);
 
@@ -409,27 +422,161 @@ struct PcbfpgaImpl : ViaductAPI
                 // Add Inputs
                 if (bel_json["inputs"].is_array()) {
                     for (const auto &input : bel_json["inputs"].array_items()) {
-                       create_bel_inout_wire(x, y, z, input.string_value(), bel_name, b, tile_wires, PORT_IN);
+                       create_bel_inout_wire(x, y, input.string_value(), unique_bel_name, b, tile_wires, PORT_IN);
                     }
                 }
 
                 // Add Inouts
                 if (bel_json["inouts"].is_array()) {
                     for (const auto &inout : bel_json["inouts"].array_items()) {
-                        create_bel_inout_wire(x, y, z, inout.string_value(), bel_name, b, tile_wires, PORT_INOUT);
+                        create_bel_inout_wire(x, y, inout.string_value(), unique_bel_name, b, tile_wires, PORT_INOUT);
                     }
                 }
 
                 // Add Outputs
                 if (bel_json["outputs"].is_array()) {
                     for (const auto &output : bel_json["outputs"].array_items()) {
-                        create_bel_inout_wire(x, y, z, output.string_value(), bel_name, b, tile_wires, PORT_OUT);
+                        create_bel_inout_wire(x, y, output.string_value(), unique_bel_name, b, tile_wires, PORT_OUT);
                     }
                 }
             }
             bel_count += num_per_tile;
         }
+
         return tile_json["tile_type"].string_value();
+    }
+
+    // Create PIPs
+    void init_pips() {
+        log_info("pcbFPGA: Creating PIPs...\n");
+        for(int y = 0; y < Y; y++) {
+            auto& row_tile_types = tile_types.at(y);
+            for(int x = 0; x < X; x++) {
+                auto tile_json = find_tile_json(row_tile_types.at(x), false);
+                if (tile_json != json11::Json()) {
+                    log_info("pcbFPGA: Creating PIPs for tile %s at (%d, %d)\n", tile_json["tile_type"].string_value().c_str(), x, y);
+                    for (const auto& pip_json : tile_json["pips"].array_items()) {
+                        create_pips_for_tile(x, y, pip_json, false);
+                    }
+                    for (const auto& pip_json : tile_json["internal_pips"].array_items()) {
+                        create_pips_for_tile(x, y, pip_json, true);
+                    }
+                }
+            }
+        }
+    }
+
+    // Create PIPs for a tile
+    void create_pips_for_tile(int x, int y, json11::Json pip_json, bool internal) {
+        // Get Tile names
+        const std::string src_tile_name = pip_json["src_tile"].string_value();
+        const std::string dst_tile_name = pip_json["dst_tile"].string_value();
+
+        // Get Wire names
+        const std::string src_wire_name = pip_json["src_wire"].string_value();
+        const std::string dst_wire_name = pip_json["dst_wire"].string_value();
+
+        // Get Delay
+        const delay_t delay = std::max((float) lookup_param(pip_json["delay"]).number_value(), 0.01f);
+
+        // Find the source and destination tiles and bel wires
+        auto src_wires_per_bel = find_wires_for_tile_neighbour(x, y, src_tile_name);
+        auto dst_wires_per_bel = find_wires_for_tile_neighbour(x, y, dst_tile_name);
+
+
+        // Filter out the source wires
+        auto src_wires = filter_bel_wires(src_wires_per_bel, src_wire_name);
+        auto dst_wires = filter_bel_wires(dst_wires_per_bel, dst_wire_name);
+
+        for(const auto& src_wire : src_wires) {
+            std::string src_wire_name = ctx->nameOfWire(src_wire);
+            std::string src_x_y = src_wire_name.substr(0, src_wire_name.find_last_of("/"));
+            for(const auto& dst_wire : dst_wires) {
+                std::string dst_wire_name = ctx->nameOfWire(dst_wire);
+                std::string dst_x_y = dst_wire_name.substr(0, dst_wire_name.find_last_of("/"));
+
+                if (!internal && (src_x_y == dst_x_y)) {
+                    log_info("pcbFPGA: \tSkipping PIP from %s to %s with delay %f\n", ctx->nameOfWire(src_wire), ctx->nameOfWire(dst_wire), delay);
+                    continue;
+                }
+                log_info("pcbFPGA: \tCreating PIP from %s to %s with delay %f\n", ctx->nameOfWire(src_wire), ctx->nameOfWire(dst_wire), delay);
+                add_pip(Loc(x, y, 0), src_wire, dst_wire, delay);
+            }
+        }
+    }
+
+    std::vector<WireId> filter_bel_wires(const TileWireMap_t& bel_wires, const std::string& wire_name) {
+        std::vector<WireId> wires;
+        for(const auto& bel_wire : bel_wires) {
+            log_info("pcbFPGA: bel %s\n", bel_wire.first.c_str());
+            for(const auto& wire : bel_wire.second) {
+                // Get Hierarchical Name
+                std::string hier_wire_name = ctx->nameOfWire(wire);
+                // Get the wire name
+                std::string bel_wire_name = hier_wire_name.substr(hier_wire_name.find_last_of("_") + 1);
+                if(bel_wire_name.substr(0, bel_wire_name.find_first_of("[")) == wire_name) {
+                    wires.push_back(wire);
+                }
+            }
+        }
+        return wires;
+    }
+
+    // Find BELs for a tile
+    TileWireMap_t find_wires_for_tile_neighbour(int x, int y, const std::string& tile_name) {
+        TileWireMap_t wires;
+        // Check tile itself
+        if (tile_types.at(y).at(x) == tile_name) {
+            log_info("pcbFPGA: Found wires for same tile %s at (%d, %d)\n", tile_name.c_str(), x, y);
+            for (auto& wire_dict_pair : wires_per_tile.at(y).at(x)) {
+                for (const auto& wire : wire_dict_pair.second) {
+                    wires[wire_dict_pair.first].push_back(wire);
+                }
+            }
+        }
+        // Check top neighbour
+        if ((y > 0) && (tile_types.at(y - 1).at(x) == tile_name)) {
+            log_info("pcbFPGA: Found wires for tile top neighbor %s at (%d, %d)\n", tile_name.c_str(), x, y - 1);
+            for (auto& wire_dict_pair : wires_per_tile.at(y - 1).at(x)) {
+                for (const auto& wire : wire_dict_pair.second) {
+                    wires[wire_dict_pair.first].push_back(wire);
+                }
+            }
+        }
+        // Check bottom neighbour
+        if ((y < (Y - 1)) && (tile_types.at(y + 1).at(x) == tile_name)) {
+            log_info("pcbFPGA: Found wires for tile bottom neighbor %s at (%d, %d)\n", tile_name.c_str(), x, y + 1);
+            for (auto& wire_dict_pair : wires_per_tile.at(y + 1).at(x)) {
+                for (const auto& wire : wire_dict_pair.second) {
+                    wires[wire_dict_pair.first].push_back(wire);
+                }
+            }
+        }
+        // Check left neighbour
+        if ((x > 0) && (tile_types.at(y).at(x - 1) == tile_name)) {
+            log_info("pcbFPGA: Found wires for tile left neighbor %s at (%d, %d)\n", tile_name.c_str(), x - 1, y);
+            for (auto& wire_dict_pair : wires_per_tile.at(y).at(x - 1)) {
+                for (const auto& wire : wire_dict_pair.second) {
+                    wires[wire_dict_pair.first].push_back(wire);
+                }
+            }
+        }
+        // Check right neighbour
+        if ((x < (X - 1)) && (tile_types.at(y).at(x + 1) == tile_name)) {
+            log_info("pcbFPGA: Found wires for tile right neighbor %s at (%d, %d)\n", tile_name.c_str(), x + 1, y);
+            for (auto& wire_dict_pair : wires_per_tile.at(y).at(x + 1)) {
+                for (const auto& wire : wire_dict_pair.second) {
+                    wires[wire_dict_pair.first].push_back(wire);
+                }
+            }
+        }
+        return wires;
+    }
+
+    PipId add_pip(Loc loc, WireId src, WireId dst, delay_t delay)
+    {
+        IdStringList name = IdStringList::concat(ctx->getWireName(dst), ctx->getWireName(src));
+        return ctx->addPip(name, ctx->id("PIP"), src, dst, delay, loc);
     }
 
     // Bel bucket functions
