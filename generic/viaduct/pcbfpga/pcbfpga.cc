@@ -63,9 +63,9 @@ struct PcbfpgaImpl : ViaductAPI
         init_uarch_constids(ctx);
         ViaductAPI::init(ctx);
         h.init(ctx);
-        init_wires();
+        //init_wires();
         init_tiles();
-        init_pips();
+        //init_pips();
         log_info("pcbFPGA: Architecture initialized.\n");
     }
 
@@ -105,7 +105,7 @@ struct PcbfpgaImpl : ViaductAPI
     ViaductHelpers h;
     // Configuration
     bool config_loaded = true;
-    // Grid size including IOBs at edges
+    // Grid size, number of CLBs in each direction -> Mesh is 2 * X + 3 by 2 * Y + 3 tiles
     int X = 32, Y = 32;
     // IOs per tile
     int M = 1;
@@ -121,7 +121,11 @@ struct PcbfpgaImpl : ViaductAPI
     // Tiles JSON configuration
     json11::Json tiles_json;
 
-    // Tile 
+    // Parameters that can be referenced in the JSON
+    json11::Json params_json;
+
+    // Tile types at position
+    std::vector<std::vector<std::string>> tile_types;
 
     // For fast wire lookups
     struct TileWires
@@ -157,9 +161,9 @@ struct PcbfpgaImpl : ViaductAPI
         }
 
         // Read out the configuration
-        const std::string param_names[] = {"NUM_X_TILES", "NUM_Y_TILES", "IOS_PER_TILE", "SLICES_PER_TILE", "LUT_SIZE"};
-        int* params[] = {&X, &Y, &M, &N, &K};
-        for (int i = 0; i < 4; i++) {
+        const std::string param_names[] = {"NUM_X_CLB", "NUM_Y_CLB"};
+        int* params[] = {&X, &Y};
+        for (int i = 0; i < 2; i++) {
             if (!json[param_names[i]].is_number()) {
                 log_error("pcbFPGA: Config JSON missing required parameter '%s'.\n", param_names[i].c_str());
                 return;
@@ -167,12 +171,28 @@ struct PcbfpgaImpl : ViaductAPI
             *params[i] = json[param_names[i]].int_value();
         }
 
+        // Check config
+        if(X < 1 || Y < 1) {
+            log_error("pcbFPGA: Invalid num CLBs %d x %d! Must atleast be 1x1!\n", X, Y);
+            return;
+        }
+
+        // Calculate mesh size
+        X = X * 2 + 3;
+        Y = Y * 2 + 3;
+
         // Read out the tile configuration
         if (!json["tiles"].is_array()) {
             log_error("pcbFPGA: Config JSON missing required array 'tiles'.\n");
             return;
         }
         tiles_json = json["tiles"];
+
+        params_json = json11::Json();
+        if (json["parameters"].is_object()) {
+            log_info("pcbFPGA: Found parameters in JSON\n");
+            params_json = json["parameters"];
+        }
 
         config_loaded = true;
     }
@@ -192,8 +212,8 @@ struct PcbfpgaImpl : ViaductAPI
     // Create wires to attach to bels and pips
     void init_wires()
     {
-        NPNR_ASSERT(X >= 3);
-        NPNR_ASSERT(Y >= 3);
+        NPNR_ASSERT(X >= 5);
+        NPNR_ASSERT(Y >= 5);
         NPNR_ASSERT(K >= 2);
         NPNR_ASSERT(M >= 1);
         NPNR_ASSERT(N >= M);
@@ -201,9 +221,7 @@ struct PcbfpgaImpl : ViaductAPI
 
         log_info("pcbFPGA: Creating wires...\n");
         wires_by_tile.resize(Y);
-        wires_per_tile.resize(Y);
         for (int y = 0; y < Y; y++) {
-            wires_per_tile.at(y).resize(X);
             auto &row_wires = wires_by_tile.at(y);
             row_wires.resize(X);
             for (int x = 0; x < X; x++) {
@@ -233,11 +251,60 @@ struct PcbfpgaImpl : ViaductAPI
             }
         }
     }
-    bool is_io(int x, int y) const
-    {
-        // IO are on the edges of the device
-        return (x == 0) || (x == (X - 1)) || (y == 0) || (y == (Y - 1));
+    // Is on device edge -> 1 tile from edge
+    bool is_on_edge(int x, int y) const {
+        return ((x == 0) || (x == (X - 1)) || (y == 0) || (y == (Y - 1)));
     }
+    // Is inside mesh perimeter -> 2 tiles from edge
+    bool is_in_mesh_perimeter(int x, int y) const {
+        return ((x > 1) && (x < (X - 2)) && (y > 1) && (y < (Y - 2)));
+    }
+    // Is on mesh perimeter corner -> 2 tiles from edge in corners
+    bool is_on_mesh_perimeter_corner(int x, int y) const {
+        return ((x == 1) && (y == 1)) || ((x == (X - 2)) && (y == 1)) || ((x == 1) && (y == (Y - 2))) || ((x == (X - 2)) && (y == (Y - 2)));
+    }
+    // Is on mesh perimeter -> 2 tiles from edge
+    bool is_on_mesh_perimeter(int x, int y) const {
+        return !is_on_edge(x, y) && !is_in_mesh_perimeter(x, y);
+    }
+    // Is on device corner
+    bool is_corner(int x, int y) const {
+        return ((x == 0) && (y == 0)) || ((x == (X - 1)) && (y == 0)) || ((x == 0) && (y == (Y - 1))) || ((x == (X - 1)) && (y == (Y - 1)));
+    }
+    // Is IOB -> On edge and every other tile
+    bool is_io(int x, int y) const {
+        return !is_corner(x, y) && is_on_edge(x, y) && !((x % 2 == 0) ^ (y % 2 == 0));
+    }
+    // Is CLB -> Not on the edge of the device and every even tile
+    bool is_clb(int x, int y) const { 
+        return !is_on_edge(x, y) && ((x % 2 == 0) && (y % 2 == 0));
+    }
+    // Is SWB -> Every odd tile
+    bool is_swb(int x, int y) const {
+        // Every odd tile
+        return (x % 2 == 1) && (y % 2 == 1);
+    }
+    // Is QSB -> Inside mesh perimeter and is swb
+    bool is_qsb(int x, int y) const {
+        return is_in_mesh_perimeter(x, y) && is_swb(x, y);
+    }
+    // Is TSB -> On mesh perimeter but not corner and is swb
+    bool is_tsb(int x, int y) const {
+        return is_on_mesh_perimeter(x, y) && !is_on_mesh_perimeter_corner(x, y) && is_swb(x, y);
+    }
+    // Is DSB -> On mesh perimeter corner and is swb
+    bool is_dsb(int x, int y) const {
+        return is_on_mesh_perimeter_corner(x, y) && is_swb(x, y);
+    }
+    // Is CCB -> Inside mesh perimeter and not swb or clb
+    bool is_ccb(int x, int y) const {
+        return is_in_mesh_perimeter(x, y) && !is_swb(x, y) && !is_clb(x, y);
+    }
+    // Is ICB -> On mesh perimeter but not conre and not tsb
+    bool is_icb(int x, int y) const {
+        return is_on_mesh_perimeter(x, y) && !is_on_mesh_perimeter_corner(x, y) && !is_tsb(x, y);
+    }
+
     PipId add_pip(Loc loc, WireId src, WireId dst, delay_t delay = 0.05)
     {
         IdStringList name = IdStringList::concat(ctx->getWireName(dst), ctx->getWireName(src));
@@ -255,28 +322,106 @@ struct PcbfpgaImpl : ViaductAPI
     // Create Tiles
     void init_tiles()
     {
-        json11::Json io_tile = find_tile_json("io");
-        json11::Json sle_tile = find_tile_json("sle");
-        if (io_tile.is_null()) {
-            log_error("pcbFPGA: Config JSON missing required io tile.\n");
+        // Mesh must be at least 5x5 -> IOBs on each side and one CLB in the middle
+        NPNR_ASSERT(X >= 5);
+        NPNR_ASSERT(Y >= 5);
+
+        json11::Json iob_tile = find_tile_json("IOB");
+        json11::Json clb_tile = find_tile_json("CLB");
+        if (iob_tile.is_null()) {
+            log_error("pcbFPGA: Config JSON missing required IOB tile.\n");
             return;
         }
-        if (sle_tile.is_null()) {
-            log_error("pcbFPGA: Config JSON missing required sle tile.\n");
+        if (clb_tile.is_null()) {
+            log_error("pcbFPGA: Config JSON missing required CLB tile.\n");
             return;
         }
 
-        log_info("pcbFPGA: Creating bels...\n");
+        log_info("pcbFPGA: Creating tiles...\n");
+        // IOB: Input Output Buffers -> Next to ICBs
+        int iob_count = 0;
+        // CLB: Configurable Logic Blocks -> Surrounded by 4 Connection Boxes
+        int clb_count = 0;
+        // QSB: Quad Switch Boxes -> Surrounded by 4 Connection Boxes
+        int qsb_count = 0;
+        // TSB: Triple Switch Boxes -> Next to 3 Connection Boxes on mesh perimeter
+        int tsb_count = 0;
+        // DSB: Dual Switch Boxes -> Next to 2 Connection Boxes in mesh corners
+        int dsb_count = 0;
+        // CCB: CLB Connection Box -> Connects to 2 CLBs and 2 Switch Boxes
+        int ccb_count = 0;
+        // ICB: IO Connection Box -> Connects to one CLB, one IOB and 2 Switch Boxes
+        int icb_count = 0;
+        tile_types.resize(Y);
+        wires_per_tile.resize(Y);
         for (int y = 0; y < Y; y++) {
+            auto& row_tile_types = tile_types.at(y);
+            row_tile_types.resize(X);
+            wires_per_tile.at(y).resize(X);
             for (int x = 0; x < X; x++) {
                 if (is_io(x, y)) {
-                    if (x == y)
-                        continue; // don't put IO in corners
-                    create_tile_from_json(x, y, io_tile);
-                } else {
-                    create_tile_from_json(x, y, sle_tile);
+                    NPNR_ASSERT(row_tile_types.at(x) == "");
+                    iob_count++;
+                    row_tile_types.at(x) = create_tile_from_json(x, y, iob_tile);
+                }
+                if(is_clb(x, y)) {
+                    NPNR_ASSERT(row_tile_types.at(x) == "");
+                    clb_count++;
+                    row_tile_types.at(x) = create_tile_from_json(x, y, clb_tile);
+                }
+                if(is_qsb(x, y)) {
+                    NPNR_ASSERT(row_tile_types.at(x) == "");
+                    qsb_count++;
+                    row_tile_types.at(x) = "qsb";
+                }
+                if(is_tsb(x, y)) {
+                    NPNR_ASSERT(row_tile_types.at(x) == "");
+                    tsb_count++;
+                    row_tile_types.at(x) = "tsb";
+                }
+                if(is_dsb(x, y)) {
+                    NPNR_ASSERT(row_tile_types.at(x) == "");
+                    dsb_count++;
+                    row_tile_types.at(x) = "dsb";
+                }
+                if (is_ccb(x, y)) {
+                    NPNR_ASSERT(row_tile_types.at(x) == "");
+                    ccb_count++;
+                    row_tile_types.at(x) = "ccb";
+                }
+                if (is_icb(x, y)) {
+                    NPNR_ASSERT(row_tile_types.at(x) == "");
+                    icb_count++;
+                    row_tile_types.at(x) = "icb";
                 }
             }
+        }
+
+        // Print mesh
+        log_info("pcbFPGA: Mesh Summary:\n");
+        log_info("pcbFPGA: \tIOBs: %d\n", iob_count);
+        log_info("pcbFPGA: \tCLBs: %d\n", clb_count);
+        log_info("pcbFPGA: \tQSBs: %d\n", qsb_count);
+        log_info("pcbFPGA: \tTSBs: %d\n", tsb_count);
+        log_info("pcbFPGA: \tDSBs: %d\n", dsb_count);
+        log_info("pcbFPGA: \tCCBs: %d\n", ccb_count);
+        log_info("pcbFPGA: \tICBs: %d\n", icb_count);
+        log_info("pcbFPGA:      ");
+        for(int x = 0; x < X; x++)
+           log("%3d ", x);
+        log("\n");
+        for(int y = 0; y < Y; y++) {
+            log_info("pcbFPGA: %3d: ", y);
+            auto& row_tile_types = tile_types.at(y);
+            for(int x = 0; x < X; x++) {
+                std::string tile_type = row_tile_types.at(x);
+                if (tile_type == "")
+                    log("    "); 
+                else
+                    log("%s ", tile_type.c_str());
+            }
+            log("\n");
+            log_info("pcbFPGA:\n");
         }
     }
 
@@ -286,17 +431,42 @@ struct PcbfpgaImpl : ViaductAPI
           && (name.find("]") != std::string::npos)
           && (name.find("]") > name.find("["))
           && (name.find(":") != std::string::npos)) {
-           std::string str_end = name.substr(name.find("[") + 1, name.find(":") - 2); 
-           std::string str_start = name.substr(name.find(":") + 1, name.find("]")); 
-           //log_info("pcbFPGA: Found IO %s with range: %s to %s\n", name.substr(0, name.find("[")).c_str(), str_end.c_str(), str_start.c_str());
+            std::string str_end = name.substr(name.find("[") + 1, name.find(":") - 2); 
+            std::string str_start = name.substr(name.find(":") + 1, name.find("]")); 
+            //log_info("pcbFPGA: Found IO %s with range: %s to %s\n", name.substr(0, name.find("[")).c_str(), str_end.c_str(), str_start.c_str());
 
-           start = std::stoi(str_start);
-           end = std::stoi(str_end);
-           return name.substr(0, name.find("["));
+            json11::Json start_param = lookup_param(str_start);
+            json11::Json end_param = lookup_param(str_end);
+            if(start_param.is_number()){
+                start = start_param.int_value();
+            } else {
+                start = std::stoi(str_start);
+            }
+            if(end_param.is_number()){
+                end = end_param.int_value();
+            } else {
+                end = std::stoi(str_end);
+            }
+            return name.substr(0, name.find("["));
         }
         start = -1;
         end = -1;
         return name;
+    }
+
+    // Lookup parameters in the JSON
+    json11::Json lookup_param(const std::string parameter) {
+        if (params_json.is_object() && params_json[parameter] != json11::Json()) {
+            return params_json[parameter];
+        }
+        return json11::Json();
+    }
+
+    json11::Json lookup_param(const json11::Json parameter) {
+        if (parameter.is_string() && params_json.is_object() && params_json[parameter.string_value()] != json11::Json()) {
+            return params_json[parameter.string_value()];
+        }
+        return parameter;
     }
 
     enum BelIoType {
@@ -343,14 +513,14 @@ struct PcbfpgaImpl : ViaductAPI
     }
 
     // Create Tile (BEL and Wires) from JSON configuration
-    void create_tile_from_json(int x, int y, json11::Json tile_json) {
+    std::string create_tile_from_json(int x, int y, json11::Json tile_json) {
         log_info("pcbFPGA: Creating tile at (%d, %d)\n", x, y);
 
         // Create BELs
         int bel_count = 0;
         for (const auto &bel_json : tile_json["bels"].array_items()) {
             // Get config
-            const int num_per_tile = bel_json["num_per_tile"].int_value();
+            const int num_per_tile = lookup_param(bel_json["num_per_tile"]).int_value();
             const std::string bel_name = bel_json["name"].string_value();
 
             // Get the tile wires
@@ -394,6 +564,7 @@ struct PcbfpgaImpl : ViaductAPI
             }
             bel_count += num_per_tile;
         }
+        return tile_json["tile_type"].string_value();
     }
 
     // Create PIPs inside a tile; following an example synthetic routing pattern
