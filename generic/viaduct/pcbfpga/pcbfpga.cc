@@ -26,6 +26,7 @@
 #include "util.h"
 #include "viaduct_api.h"
 #include "viaduct_helpers.h"
+#include "mesh_utils.h"
 
 #define GEN_INIT_CONSTIDS
 #define VIADUCT_CONSTIDS "viaduct/pcbfpga/constids.inc"
@@ -63,9 +64,7 @@ struct PcbfpgaImpl : ViaductAPI
         init_uarch_constids(ctx);
         ViaductAPI::init(ctx);
         h.init(ctx);
-        //init_wires();
         init_tiles();
-        //init_pips();
         log_info("pcbFPGA: Architecture initialized.\n");
     }
 
@@ -89,34 +88,14 @@ struct PcbfpgaImpl : ViaductAPI
         log_info("pcbFPGA: Packing complete.\n");
     }
 
-    void prePlace() override { assign_cell_info(); }
-
-    bool isBelLocationValid(BelId bel, bool explain_invalid) const override
-    {
-        Loc l = ctx->getBelLocation(bel);
-        if (is_io(l.x, l.y)) {
-            return true;
-        } else {
-            return slice_valid(l.x, l.y, l.z / 2);
-        }
-    }
-
   private:
     ViaductHelpers h;
     // Configuration
     bool config_loaded = true;
     // Grid size, number of CLBs in each direction -> Mesh is 2 * X + 3 by 2 * Y + 3 tiles
     int X = 32, Y = 32;
-    // IOs per tile
-    int M = 1;
-    // SLICEs per tile
-    int N = 1;
-    // LUT input count
+    // Lut Size
     int K = 4;
-    // Number of tile input buses
-    int InputMuxCount = 8; // >= 6 for attosoc; >= 10 for arbiter
-    // Number of output wires in a direction
-    int OutputMuxCount = 8; // >= 5 for attosoc; >= 8 for arbiter
 
     // Tiles JSON configuration
     json11::Json tiles_json;
@@ -127,21 +106,25 @@ struct PcbfpgaImpl : ViaductAPI
     // Tile types at position
     std::vector<std::vector<std::string>> tile_types;
 
-    // For fast wire lookups
-    struct TileWires
-    {
-        std::vector<WireId> clk, q, f, d;
-        std::vector<WireId> slice_inputs;
-        std::vector<WireId> slice_outputs;
-        std::vector<WireId> tile_inputs_north, tile_inputs_east, tile_inputs_south, tile_inputs_west;
-        std::vector<WireId> tile_outputs_north, tile_outputs_east, tile_outputs_south, tile_outputs_west;
-        std::vector<WireId> pad;
-    };
-
     typedef dict<std::string, std::vector<WireId>> TileWireMap_t;
 
     std::vector<std::vector<TileWireMap_t>> wires_per_tile;
-    std::vector<std::vector<TileWires>> wires_by_tile;
+
+    // Get an integer from a JSON object
+    int get_json_int(const json11::Json &json, const std::string &key, bool required = false, int def = -1) const {
+        // Check if key exists
+        if (json[key].is_number()) {
+            return json[key].int_value();
+        }
+
+        // Throw error if required        
+        if (required) {
+            log_error("pcbFPGA: JSON missing required parameter '%s'.\n", key.c_str());
+        }
+
+        // Return default
+        return def;
+    }
 
     // Load Config from json
     void load_json_config(std::string filename) {
@@ -161,15 +144,9 @@ struct PcbfpgaImpl : ViaductAPI
         }
 
         // Read out the configuration
-        const std::string param_names[] = {"NUM_X_CLB", "NUM_Y_CLB"};
-        int* params[] = {&X, &Y};
-        for (int i = 0; i < 2; i++) {
-            if (!json[param_names[i]].is_number()) {
-                log_error("pcbFPGA: Config JSON missing required parameter '%s'.\n", param_names[i].c_str());
-                return;
-            }
-            *params[i] = json[param_names[i]].int_value();
-        }
+        X = get_json_int(json, "NUM_X_CLB", true);
+        Y = get_json_int(json, "NUM_Y_CLB", true);
+        K = get_json_int(json, "LUT_SIZE", true);
 
         // Check config
         if(X < 1 || Y < 1) {
@@ -202,107 +179,7 @@ struct PcbfpgaImpl : ViaductAPI
         log_info("pcbFPGA: Configuration:\n");
         log_info("pcbFPGA: \tNum X Tiles: %d\n", X);
         log_info("pcbFPGA: \tNum Y Tiles: %d\n", Y);
-        log_info("pcbFPGA: \tIOBs per Tile: %d\n", M);
-        log_info("pcbFPGA: \tSlices per Tile: %d\n", N);
         log_info("pcbFPGA: \tLUT Size: %d\n", K);
-        log_info("pcbFPGA: \tInput Mux Count: %d\n", InputMuxCount);
-        log_info("pcbFPGA: \tOutput Mux Count: %d\n", OutputMuxCount);
-    }
-
-    // Create wires to attach to bels and pips
-    void init_wires()
-    {
-        NPNR_ASSERT(X >= 5);
-        NPNR_ASSERT(Y >= 5);
-        NPNR_ASSERT(K >= 2);
-        NPNR_ASSERT(M >= 1);
-        NPNR_ASSERT(N >= M);
-        NPNR_ASSERT(InputMuxCount >= OutputMuxCount);
-
-        log_info("pcbFPGA: Creating wires...\n");
-        wires_by_tile.resize(Y);
-        for (int y = 0; y < Y; y++) {
-            auto &row_wires = wires_by_tile.at(y);
-            row_wires.resize(X);
-            for (int x = 0; x < X; x++) {
-                auto &w = row_wires.at(x);
-                // Tile inputs
-                for (int tile_input = 0; tile_input < InputMuxCount; tile_input++) {
-                    w.tile_inputs_north.push_back(
-                            ctx->addWire(h.xy_id(x, y, ctx->idf("TILEINN[%d]", tile_input)), ctx->id("TILEINN"), x, y));
-                    w.tile_inputs_east.push_back(
-                            ctx->addWire(h.xy_id(x, y, ctx->idf("TILEINE[%d]", tile_input)), ctx->id("TILEINE"), x, y));
-                    w.tile_inputs_south.push_back(
-                            ctx->addWire(h.xy_id(x, y, ctx->idf("TILEINS[%d]", tile_input)), ctx->id("TILEINS"), x, y));
-                    w.tile_inputs_west.push_back(
-                            ctx->addWire(h.xy_id(x, y, ctx->idf("TILEINW[%d]", tile_input)), ctx->id("TILEINW"), x, y));
-                }
-                // Tile outputs
-                for (int tile_output = 0; tile_output < OutputMuxCount; tile_output++) {
-                    w.tile_outputs_north.push_back(ctx->addWire(h.xy_id(x, y, ctx->idf("TILEOUTN[%d]", tile_output)),
-                                                                ctx->id("TILEOUTN"), x, y));
-                    w.tile_outputs_east.push_back(ctx->addWire(h.xy_id(x, y, ctx->idf("TILEOUTE[%d]", tile_output)),
-                                                               ctx->id("TILEOUTE"), x, y));
-                    w.tile_outputs_south.push_back(ctx->addWire(h.xy_id(x, y, ctx->idf("TILEOUTS[%d]", tile_output)),
-                                                                ctx->id("TILEOUTS"), x, y));
-                    w.tile_outputs_west.push_back(ctx->addWire(h.xy_id(x, y, ctx->idf("TILEOUTW[%d]", tile_output)),
-                                                               ctx->id("TILEOUTW"), x, y));
-                }
-            }
-        }
-    }
-    // Is on device edge -> 1 tile from edge
-    bool is_on_edge(int x, int y) const {
-        return ((x == 0) || (x == (X - 1)) || (y == 0) || (y == (Y - 1)));
-    }
-    // Is inside mesh perimeter -> 2 tiles from edge
-    bool is_in_mesh_perimeter(int x, int y) const {
-        return ((x > 1) && (x < (X - 2)) && (y > 1) && (y < (Y - 2)));
-    }
-    // Is on mesh perimeter corner -> 2 tiles from edge in corners
-    bool is_on_mesh_perimeter_corner(int x, int y) const {
-        return ((x == 1) && (y == 1)) || ((x == (X - 2)) && (y == 1)) || ((x == 1) && (y == (Y - 2))) || ((x == (X - 2)) && (y == (Y - 2)));
-    }
-    // Is on mesh perimeter -> 2 tiles from edge
-    bool is_on_mesh_perimeter(int x, int y) const {
-        return !is_on_edge(x, y) && !is_in_mesh_perimeter(x, y);
-    }
-    // Is on device corner
-    bool is_corner(int x, int y) const {
-        return ((x == 0) && (y == 0)) || ((x == (X - 1)) && (y == 0)) || ((x == 0) && (y == (Y - 1))) || ((x == (X - 1)) && (y == (Y - 1)));
-    }
-    // Is IOB -> On edge and every other tile
-    bool is_io(int x, int y) const {
-        return !is_corner(x, y) && is_on_edge(x, y) && !((x % 2 == 0) ^ (y % 2 == 0));
-    }
-    // Is CLB -> Not on the edge of the device and every even tile
-    bool is_clb(int x, int y) const { 
-        return !is_on_edge(x, y) && ((x % 2 == 0) && (y % 2 == 0));
-    }
-    // Is SWB -> Every odd tile
-    bool is_swb(int x, int y) const {
-        // Every odd tile
-        return (x % 2 == 1) && (y % 2 == 1);
-    }
-    // Is QSB -> Inside mesh perimeter and is swb
-    bool is_qsb(int x, int y) const {
-        return is_in_mesh_perimeter(x, y) && is_swb(x, y);
-    }
-    // Is TSB -> On mesh perimeter but not corner and is swb
-    bool is_tsb(int x, int y) const {
-        return is_on_mesh_perimeter(x, y) && !is_on_mesh_perimeter_corner(x, y) && is_swb(x, y);
-    }
-    // Is DSB -> On mesh perimeter corner and is swb
-    bool is_dsb(int x, int y) const {
-        return is_on_mesh_perimeter_corner(x, y) && is_swb(x, y);
-    }
-    // Is CCB -> Inside mesh perimeter and not swb or clb
-    bool is_ccb(int x, int y) const {
-        return is_in_mesh_perimeter(x, y) && !is_swb(x, y) && !is_clb(x, y);
-    }
-    // Is ICB -> On mesh perimeter but not conre and not tsb
-    bool is_icb(int x, int y) const {
-        return is_on_mesh_perimeter(x, y) && !is_on_mesh_perimeter_corner(x, y) && !is_tsb(x, y);
     }
 
     PipId add_pip(Loc loc, WireId src, WireId dst, delay_t delay = 0.05)
@@ -359,37 +236,43 @@ struct PcbfpgaImpl : ViaductAPI
             row_tile_types.resize(X);
             wires_per_tile.at(y).resize(X);
             for (int x = 0; x < X; x++) {
-                if (is_io(x, y)) {
+                if (mesh_utils::is_io(x, y, X, Y)) {
                     NPNR_ASSERT(row_tile_types.at(x) == "");
                     iob_count++;
                     row_tile_types.at(x) = create_tile_from_json(x, y, iob_tile);
+                    continue;
                 }
-                if(is_clb(x, y)) {
+                if(mesh_utils::is_clb(x, y, X, Y)) {
                     NPNR_ASSERT(row_tile_types.at(x) == "");
                     clb_count++;
                     row_tile_types.at(x) = create_tile_from_json(x, y, clb_tile);
+                    continue;
                 }
-                if(is_qsb(x, y)) {
+                if(mesh_utils::is_qsb(x, y, X, Y)) {
                     NPNR_ASSERT(row_tile_types.at(x) == "");
                     qsb_count++;
                     row_tile_types.at(x) = "qsb";
+                    continue;
                 }
-                if(is_tsb(x, y)) {
+                if(mesh_utils::is_tsb(x, y, X, Y)) {
                     NPNR_ASSERT(row_tile_types.at(x) == "");
                     tsb_count++;
                     row_tile_types.at(x) = "tsb";
+                    continue;
                 }
-                if(is_dsb(x, y)) {
+                if(mesh_utils::is_dsb(x, y, X, Y)) {
                     NPNR_ASSERT(row_tile_types.at(x) == "");
                     dsb_count++;
                     row_tile_types.at(x) = "dsb";
+                    continue;
                 }
-                if (is_ccb(x, y)) {
+                if (mesh_utils::is_ccb(x, y, X, Y)) {
                     NPNR_ASSERT(row_tile_types.at(x) == "");
                     ccb_count++;
                     row_tile_types.at(x) = "ccb";
+                    continue;
                 }
-                if (is_icb(x, y)) {
+                if (mesh_utils::is_icb(x, y, X, Y)) {
                     NPNR_ASSERT(row_tile_types.at(x) == "");
                     icb_count++;
                     row_tile_types.at(x) = "icb";
@@ -469,13 +352,7 @@ struct PcbfpgaImpl : ViaductAPI
         return parameter;
     }
 
-    enum BelIoType {
-        BEL_INPUT,
-        BEL_OUTPUT,
-        BEL_INOUT
-    };
-
-    void create_bel_inout_wire(int x, int y, int z, const std::string& inout_name, const std::string& bel_name, BelId b, TileWireMap_t& tile_wires, const BelIoType io_type) {
+    void create_bel_inout_wire(int x, int y, int z, const std::string& inout_name, const std::string& bel_name, BelId b, TileWireMap_t& tile_wires, const PortType io_type) {
         int start, end;
         const std::string name = parse_name_range(inout_name, end, start);
 
@@ -486,13 +363,7 @@ struct PcbfpgaImpl : ViaductAPI
             WireId wire = ctx->addWire(h.xy_id(x, y, ctx->idf("%s%d", name.c_str(), z)), input_id, x, y);
             tile_wires[name].push_back(wire);
 
-            if (io_type == BEL_INPUT) {
-                ctx->addBelInput(b, input_id, wire);
-            } else if (io_type == BEL_OUTPUT) {
-                ctx->addBelOutput(b, input_id, wire);
-            } else {
-                ctx->addBelInout(b, input_id, wire);
-            }
+            ctx->addBelPin(b, input_id, wire, io_type);
         } else {
             for (int i = start; i <= end; i++) {
                 log_info("pcbFPGA: \t\t\tAdding %s[%d] to BEL %s%d\n", name.c_str(), i, bel_name.c_str(), z);
@@ -501,13 +372,7 @@ struct PcbfpgaImpl : ViaductAPI
                 WireId wire = ctx->addWire(h.xy_id(x, y, ctx->idf("%s[%d]%d", name.c_str(), i, z)), input_id, x, y);
                 tile_wires[name].push_back(wire);
 
-                if (io_type == BEL_INPUT) {
-                    ctx->addBelInput(b, input_id, wire);
-                } else if (io_type == BEL_OUTPUT) {
-                    ctx->addBelOutput(b, input_id, wire);
-                } else {
-                    ctx->addBelInout(b, input_id, wire);
-                }
+                ctx->addBelPin(b, input_id, wire, io_type);
             }
         }
     }
@@ -544,21 +409,21 @@ struct PcbfpgaImpl : ViaductAPI
                 // Add Inputs
                 if (bel_json["inputs"].is_array()) {
                     for (const auto &input : bel_json["inputs"].array_items()) {
-                       create_bel_inout_wire(x, y, z, input.string_value(), bel_name, b, tile_wires, BEL_INPUT);
+                       create_bel_inout_wire(x, y, z, input.string_value(), bel_name, b, tile_wires, PORT_IN);
                     }
                 }
 
                 // Add Inouts
                 if (bel_json["inouts"].is_array()) {
                     for (const auto &inout : bel_json["inouts"].array_items()) {
-                        create_bel_inout_wire(x, y, z, inout.string_value(), bel_name, b, tile_wires, BEL_INOUT);
+                        create_bel_inout_wire(x, y, z, inout.string_value(), bel_name, b, tile_wires, PORT_INOUT);
                     }
                 }
 
                 // Add Outputs
                 if (bel_json["outputs"].is_array()) {
                     for (const auto &output : bel_json["outputs"].array_items()) {
-                        create_bel_inout_wire(x, y, z, output.string_value(), bel_name, b, tile_wires, BEL_OUTPUT);
+                        create_bel_inout_wire(x, y, z, output.string_value(), bel_name, b, tile_wires, PORT_OUT);
                     }
                 }
             }
@@ -567,299 +432,6 @@ struct PcbfpgaImpl : ViaductAPI
         return tile_json["tile_type"].string_value();
     }
 
-    // Create PIPs inside a tile; following an example synthetic routing pattern
-    void add_io_pips(int x, int y)
-    {
-        auto &w = wires_by_tile.at(y).at(x);
-        Loc loc(x, y, 0);
-
-        const uint16_t tile_input_config[8] = {
-                0b0000'0000'0000'0001, 0b0000'0000'0000'0001, 0b0000'0000'0000'0001, 0b0000'0000'0000'0001,
-                0b0000'0000'0000'0010, 0b0000'0000'0000'0010, 0b0000'0000'0000'0010, 0b0000'0000'0000'0010,
-        };
-
-        // Tile inputs
-        for (int tile_input = 0; tile_input < InputMuxCount; tile_input++) {
-            auto &dst = w.tile_inputs_north.at(tile_input);
-            // North
-            for (int step = 1; step <= 4; step++) {
-                if (y - step <= 0 || x == 0 || x == X - 1)
-                    break;
-                auto &w = wires_by_tile.at(y - step).at(x);
-                for (int tile_output = 0; tile_output < OutputMuxCount; tile_output++)
-                    if ((1 << tile_input) & tile_input_config[tile_output])
-                        add_pip(loc, w.tile_outputs_north.at(tile_output), dst);
-            }
-        }
-
-        for (int tile_input = 0; tile_input < InputMuxCount; tile_input++) {
-            auto &dst = w.tile_inputs_east.at(tile_input);
-            // East
-            for (int step = 1; step <= 4; step++) {
-                if (x - step <= 0 || y == 0 || y == Y - 1)
-                    break;
-                auto &w = wires_by_tile.at(y).at(x - step);
-                for (int tile_output = 0; tile_output < OutputMuxCount; tile_output++)
-                    if ((1 << tile_input) & tile_input_config[tile_output])
-                        add_pip(loc, w.tile_outputs_east.at(tile_output), dst);
-            }
-        }
-
-        for (int tile_input = 0; tile_input < InputMuxCount; tile_input++) {
-            auto &dst = w.tile_inputs_south.at(tile_input);
-            // South
-            for (int step = 1; step <= 4; step++) {
-                if (y + step >= Y || x == 0 || x == X - 1)
-                    break;
-                auto &w = wires_by_tile.at(y + step).at(x);
-                for (int tile_output = 0; tile_output < OutputMuxCount; tile_output++)
-                    if ((1 << tile_input) & tile_input_config[tile_output])
-                        add_pip(loc, w.tile_outputs_south.at(tile_output), dst);
-            }
-        }
-
-        for (int tile_input = 0; tile_input < InputMuxCount; tile_input++) {
-            auto &dst = w.tile_inputs_west.at(tile_input);
-            // West
-            for (int step = 1; step <= 4; step++) {
-                if (x + step >= X || y == 0 || y == Y - 1)
-                    break;
-                auto &w = wires_by_tile.at(y).at(x + step);
-                for (int tile_output = 0; tile_output < OutputMuxCount; tile_output++)
-                    if ((1 << tile_input) & tile_input_config[tile_output])
-                        add_pip(loc, w.tile_outputs_west.at(tile_output), dst);
-            }
-        }
-
-        // Tile outputs
-        for (int tile_output = 0; tile_output < OutputMuxCount; tile_output++) {
-            for (int z = 0; z < M; z++) {
-                WireId src = w.slice_outputs.at(z);
-                // O output
-                if (y == 0)
-                    add_pip(loc, src, w.tile_outputs_north.at(tile_output));
-                if (x == 0)
-                    add_pip(loc, src, w.tile_outputs_east.at(tile_output));
-                if (y == Y - 1)
-                    add_pip(loc, src, w.tile_outputs_south.at(tile_output));
-                if (x == X - 1)
-                    add_pip(loc, src, w.tile_outputs_west.at(tile_output));
-            }
-        }
-
-        // Pad inputs
-        for (const auto &src : w.tile_inputs_north) {
-            for (int z = 0; z < M; z++) {
-                // I input
-                add_pip(loc, src, w.slice_inputs.at(z * K + 0));
-                // EN input
-                add_pip(loc, src, w.slice_inputs.at(z * K + 1));
-            }
-        }
-        for (const auto &src : w.tile_inputs_east) {
-            for (int z = 0; z < M; z++) {
-                // I input
-                add_pip(loc, src, w.slice_inputs.at(z * K + 0));
-                // EN input
-                add_pip(loc, src, w.slice_inputs.at(z * K + 1));
-            }
-        }
-        for (const auto &src : w.tile_inputs_south) {
-            for (int z = 0; z < M; z++) {
-                // I input
-                add_pip(loc, src, w.slice_inputs.at(z * K + 0));
-                // EN input
-                add_pip(loc, src, w.slice_inputs.at(z * K + 1));
-            }
-        }
-        for (const auto &src : w.tile_inputs_west) {
-            for (int z = 0; z < M; z++) {
-                // I input
-                add_pip(loc, src, w.slice_inputs.at(z * K + 0));
-                // EN input
-                add_pip(loc, src, w.slice_inputs.at(z * K + 1));
-            }
-        }
-    }
-    void add_slice_pips(int x, int y)
-    {
-        auto &w = wires_by_tile.at(y).at(x);
-        Loc loc(x, y, 0);
-
-        const uint16_t tile_input_config[8] = {0b1010'1010'1010'1010, 0b0101'0101'0101'0101, 0b0110'0110'0110'0110,
-                                               0b1001'1001'1001'1001, 0b0011'0011'0011'0011, 0b1100'1100'1100'1100,
-                                               0b1111'0000'1111'0000, 0b0000'1111'0000'1111};
-
-        // Slice input selector
-        for (int lut = 0; lut < N; lut++) {
-            for (int lut_input = 0; lut_input < K; lut_input++) {
-                for (const auto &tile_input : w.tile_inputs_north) // Tile input bus
-                    add_pip(loc, tile_input, w.slice_inputs.at(lut * K + lut_input));
-                for (const auto &tile_input : w.tile_inputs_east) // Tile input bus
-                    add_pip(loc, tile_input, w.slice_inputs.at(lut * K + lut_input));
-                for (const auto &tile_input : w.tile_inputs_south) // Tile input bus
-                    add_pip(loc, tile_input, w.slice_inputs.at(lut * K + lut_input));
-                for (const auto &tile_input : w.tile_inputs_west) // Tile input bus
-                    add_pip(loc, tile_input, w.slice_inputs.at(lut * K + lut_input));
-                for (const auto &slice_output : w.slice_outputs) // Slice output bus
-                    add_pip(loc, slice_output, w.slice_inputs.at(lut * K + lut_input));
-            }
-            for (const auto &tile_input : w.tile_inputs_north) // Clock selector
-                add_pip(loc, tile_input, w.clk.at(lut));
-            for (const auto &tile_input : w.tile_inputs_east) // Clock selector
-                add_pip(loc, tile_input, w.clk.at(lut));
-            for (const auto &tile_input : w.tile_inputs_south) // Clock selector
-                add_pip(loc, tile_input, w.clk.at(lut));
-            for (const auto &tile_input : w.tile_inputs_west) // Clock selector
-                add_pip(loc, tile_input, w.clk.at(lut));
-        }
-
-        // Slice output selector
-        for (int slice_output = 0; slice_output < N; slice_output++) {
-            add_pip(loc, w.f.at(slice_output), w.slice_outputs.at(slice_output)); // LUT output
-            add_pip(loc, w.q.at(slice_output), w.slice_outputs.at(slice_output)); // DFF output
-        }
-
-        // Tile input selector
-        for (int step = 1; step <= 4; step++) {
-            if (y + step < Y) // South
-                for (size_t tile_input_index = 0; tile_input_index < w.tile_inputs_north.size(); tile_input_index++)
-                    for (size_t tile_output_index = 0;
-                         tile_output_index < wires_by_tile.at(y + step).at(x).tile_outputs_south.size();
-                         tile_output_index++)
-                        if ((1 << tile_input_index) & tile_input_config[tile_output_index])
-                            add_pip(loc, wires_by_tile.at(y + step).at(x).tile_outputs_south.at(tile_output_index),
-                                    w.tile_inputs_north.at(tile_input_index));
-
-            if (x + step < X) // West
-                for (size_t tile_input_index = 0; tile_input_index < w.tile_inputs_east.size(); tile_input_index++)
-                    for (size_t tile_output_index = 0;
-                         tile_output_index < wires_by_tile.at(y).at(x + step).tile_outputs_west.size();
-                         tile_output_index++)
-                        if ((1 << tile_input_index) & tile_input_config[tile_output_index])
-                            add_pip(loc, wires_by_tile.at(y).at(x + step).tile_outputs_west.at(tile_output_index),
-                                    w.tile_inputs_east.at(tile_input_index));
-
-            if (y - step >= 0) // North
-                for (size_t tile_input_index = 0; tile_input_index < w.tile_inputs_south.size(); tile_input_index++)
-                    for (size_t tile_output_index = 0;
-                         tile_output_index < wires_by_tile.at(y - step).at(x).tile_outputs_north.size();
-                         tile_output_index++)
-                        if ((1 << tile_input_index) & tile_input_config[tile_output_index])
-                            add_pip(loc, wires_by_tile.at(y - step).at(x).tile_outputs_north.at(tile_output_index),
-                                    w.tile_inputs_south.at(tile_input_index));
-
-            if (x - step >= 0) // East
-                for (size_t tile_input_index = 0; tile_input_index < w.tile_inputs_west.size(); tile_input_index++)
-                    for (size_t tile_output_index = 0;
-                         tile_output_index < wires_by_tile.at(y).at(x - step).tile_outputs_east.size();
-                         tile_output_index++)
-                        if ((1 << tile_input_index) & tile_input_config[tile_output_index])
-                            add_pip(loc, wires_by_tile.at(y).at(x - step).tile_outputs_east.at(tile_output_index),
-                                    w.tile_inputs_west.at(tile_input_index));
-        }
-
-        // Tile output selector
-        for (const auto &slice_output : w.slice_outputs) {
-            for (const auto &tile_output : w.tile_outputs_north)
-                add_pip(loc, slice_output, tile_output);
-            for (const auto &tile_output : w.tile_outputs_east)
-                add_pip(loc, slice_output, tile_output);
-            for (const auto &tile_output : w.tile_outputs_south)
-                add_pip(loc, slice_output, tile_output);
-            for (const auto &tile_output : w.tile_outputs_west)
-                add_pip(loc, slice_output, tile_output);
-        }
-
-        for (const auto &tile_input : w.tile_inputs_north) {
-            for (const auto &tile_output : w.tile_outputs_north)
-                add_pip(loc, tile_input, tile_output);
-            for (const auto &tile_output : w.tile_outputs_east)
-                add_pip(loc, tile_input, tile_output);
-            for (const auto &tile_output : w.tile_outputs_south)
-                add_pip(loc, tile_input, tile_output);
-            for (const auto &tile_output : w.tile_outputs_west)
-                add_pip(loc, tile_input, tile_output);
-        }
-        for (const auto &tile_input : w.tile_inputs_east) {
-            for (const auto &tile_output : w.tile_outputs_north)
-                add_pip(loc, tile_input, tile_output);
-            for (const auto &tile_output : w.tile_outputs_east)
-                add_pip(loc, tile_input, tile_output);
-            for (const auto &tile_output : w.tile_outputs_south)
-                add_pip(loc, tile_input, tile_output);
-            for (const auto &tile_output : w.tile_outputs_west)
-                add_pip(loc, tile_input, tile_output);
-        }
-        for (const auto &tile_input : w.tile_inputs_south) {
-            for (const auto &tile_output : w.tile_outputs_north)
-                add_pip(loc, tile_input, tile_output);
-            for (const auto &tile_output : w.tile_outputs_east)
-                add_pip(loc, tile_input, tile_output);
-            for (const auto &tile_output : w.tile_outputs_south)
-                add_pip(loc, tile_input, tile_output);
-            for (const auto &tile_output : w.tile_outputs_west)
-                add_pip(loc, tile_input, tile_output);
-        }
-        for (const auto &tile_input : w.tile_inputs_west) {
-            for (const auto &tile_output : w.tile_outputs_north)
-                add_pip(loc, tile_input, tile_output);
-            for (const auto &tile_output : w.tile_outputs_east)
-                add_pip(loc, tile_input, tile_output);
-            for (const auto &tile_output : w.tile_outputs_south)
-                add_pip(loc, tile_input, tile_output);
-            for (const auto &tile_output : w.tile_outputs_west)
-                add_pip(loc, tile_input, tile_output);
-        }
-    }
-    void init_pips()
-    {
-        log_info("pcbFPGA: Creating pips...\n");
-        for (int y = 0; y < Y; y++)
-            for (int x = 0; x < X; x++) {
-                if (is_io(x, y)) {
-                    add_io_pips(x, y);
-                } else {
-                    add_slice_pips(x, y);
-                }
-            }
-    }
-    // Validity checking
-    struct PcbfpgaCellInfo
-    {
-        const NetInfo *lut_f = nullptr, *ff_d = nullptr;
-        bool lut_i3_used = false;
-    };
-    std::vector<PcbfpgaCellInfo> fast_cell_info;
-    void assign_cell_info()
-    {
-        fast_cell_info.resize(ctx->cells.size());
-        for (auto &cell : ctx->cells) {
-            CellInfo *ci = cell.second.get();
-            auto &fc = fast_cell_info.at(ci->flat_index);
-            if (ci->type == id_LUT) {
-                fc.lut_f = ci->getPort(id_F);
-                fc.lut_i3_used = (ci->getPort(ctx->idf("I[%d]", K - 1)) != nullptr);
-            } else if (ci->type == id_DFF) {
-                fc.ff_d = ci->getPort(id_D);
-            }
-        }
-    }
-    bool slice_valid(int x, int y, int z) const
-    {
-        const CellInfo *lut = ctx->getBoundBelCell(ctx->getBelByLocation(Loc(x, y, z * 2)));
-        const CellInfo *ff = ctx->getBoundBelCell(ctx->getBelByLocation(Loc(x, y, z * 2 + 1)));
-        if (!lut || !ff)
-            return true; // always valid if only LUT or FF used
-        const auto &lut_data = fast_cell_info.at(lut->flat_index);
-        const auto &ff_data = fast_cell_info.at(ff->flat_index);
-        // In our example arch; the FF D can either be driven from LUT F or LUT I3
-        // so either; FF D must equal LUT F or LUT I3 must be unused
-        if ((ff_data.ff_d == lut_data.lut_f && lut_data.lut_f->users.entries() == 1) || !lut_data.lut_i3_used)
-            return true;
-        // Can't route FF and LUT output separately
-        return false;
-    }
     // Bel bucket functions
     IdString getBelBucketForCellType(IdString cell_type) const override
     {
