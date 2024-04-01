@@ -1,32 +1,36 @@
-module LUT #(
-	parameter K = 4,
-	parameter [2**K-1:0] INIT = 0
+module PCBFPGA_LUT #(
+		parameter            K    = 4,
+		parameter [2**K-1:0] INIT = 0
 ) (
-	input [K-1:0] I,
-	output F
+		input [K-1:0] I,
+		output        F
 );
-	wire [K-1:0] I_pd;
-
-	genvar ii;
-	generate
-		for (ii = 0; ii < K; ii = ii + 1'b1)
-			assign I_pd[ii] = (I[ii] === 1'bz) ? 1'b0 : I[ii];
-	endgenerate
-
-	assign F = INIT[I_pd];
+		assign F = INIT[I];
 endmodule
 
-module DFF (
-	input CLK, D,
-	output reg Q
+module PCBFPGA_FF #(
+		parameter NO_ENABLE        = 0,
+		parameter HAS_RESET        = 0,
+		parameter ACTIVE_LOW_RESET = 0
+)(
+		input      CLK,
+		input      RST,
+		input      EN,
+		input      D,
+		output reg Q
 );
-	initial Q = 1'b0;
-	always @(posedge CLK)
-		Q <= D;
+		always @(posedge CLK) begin
+				if(EN | NO_ENABLE) begin
+					 	if(HAS_RESET & (RST ^ ACTIVE_LOW_RESET))
+								Q <= 1'b0;
+						else
+								Q <= D;
+				end
+		end
 endmodule
 
 module INBUF (
-    input PAD,
+    input  PAD,
     output O,
 );
     assign O = PAD;
@@ -34,7 +38,7 @@ endmodule
 
 module OUTBUF (
     output PAD,
-    input I,
+    input  I,
 );
     assign PAD = I;
 endmodule

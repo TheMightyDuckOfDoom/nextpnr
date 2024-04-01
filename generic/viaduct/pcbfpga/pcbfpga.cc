@@ -81,54 +81,52 @@ struct PcbfpgaImpl : ViaductAPI
         h.remove_nextpnr_iobs(top_ports);
 
         // Replace constants drivers
-        if(false) {
-            h.replace_constants(CellTypePort(id_VCC_DRV, id_ONE), CellTypePort(id_GND_DRV, id_ZERO));
-            
-            // Remove unused VCC net and driver
-            auto& vcc_net  = ctx->nets.at(ctx->id("$PACKER_VCC"));
-            if (vcc_net->users.empty()) {
-                log_info("pcbFPGA: VCC net has no users\n");
-                ctx->nets.erase(vcc_net->name);
-                ctx->cells.erase(ctx->id("$PACKER_VCC_DRV"));
-                log_info("pcbFPGA: Removed VCC net and driver\n");
-            } else {
-                log_info("pcbFPGA: VCC Driver %s\n", vcc_net->driver.cell->type.c_str(ctx));
-                int count = 0;
-                for(auto& user : vcc_net->users) {
-                    log_info("pcbFPGA: VCC net has user %s:%s %s\n", user.cell->type.c_str(ctx), user.port.c_str(ctx), user.cell->name.c_str(ctx));
-                    count++;
-                }
-                log_info("pcbFPGA: VCC net has %d users\n", count);
-            }
-
-            // Remove unused GND net and driver 
-            auto& gnd_net  = ctx->nets.at(ctx->id("$PACKER_GND"));
-            if (gnd_net->users.empty()) {
-                log_info("pcbFPGA: GND net has no users\n");
-                ctx->nets.erase(gnd_net->name);
-                ctx->cells.erase(ctx->id("$PACKER_GND_DRV"));
-                log_info("pcbFPGA: Removed GND net and driver\n");
-            } else {
-                log_info("pcbFPGA: GND Driver %s\n", gnd_net->driver.cell->type.c_str(ctx));
-                int count = 0;
-                for(auto& user : gnd_net->users) {
-                    log_info("pcbFPGA: GND net has user %s:%s %s\n", user.cell->type.c_str(ctx), user.port.c_str(ctx), user.cell->name.c_str(ctx));
-                    count++;
-                }
-                log_info("pcbFPGA: GND net has %d users\n", count);
-            }
+        h.replace_constants(CellTypePort(id_VCC_DRV, id_ONE), CellTypePort(id_GND_DRV, id_ZERO));
+        
+        // Remove unused VCC net and driver
+        auto& vcc_net  = ctx->nets.at(ctx->id("$PACKER_VCC"));
+        if (vcc_net->users.empty()) {
+            log_info("pcbFPGA: VCC net has no users\n");
+            ctx->nets.erase(vcc_net->name);
+            ctx->cells.erase(ctx->id("$PACKER_VCC_DRV"));
+            log_info("pcbFPGA: Removed VCC net and driver\n");
         } else {
-            // Check if LUTs have full width
-            IdString lut_id = ctx->id("LUT");
-            IdString k_id = ctx->id("K");
-            for (const auto& cell : ctx->cells) {
-                const auto& ci = cell.second;
-                if (ci->type == lut_id) {
-                    // Check if LUT has full width
-                    int lut_k = ci->params[k_id].as_int64();
-                    if (lut_k != K) {
-                        log_error("pcbFPGA: LUT %s has width %d, expected %d\n", ci->name.c_str(ctx), lut_k, K);
-                    }
+            log_info("pcbFPGA: VCC Driver %s\n", vcc_net->driver.cell->type.c_str(ctx));
+            int count = 0;
+            for(auto& user : vcc_net->users) {
+                log_info("pcbFPGA: VCC net has user %s:%s %s\n", user.cell->type.c_str(ctx), user.port.c_str(ctx), user.cell->name.c_str(ctx));
+                count++;
+            }
+            log_info("pcbFPGA: VCC net has %d users\n", count);
+        }
+
+        // Remove unused GND net and driver 
+        auto& gnd_net  = ctx->nets.at(ctx->id("$PACKER_GND"));
+        if (gnd_net->users.empty()) {
+            log_info("pcbFPGA: GND net has no users\n");
+            ctx->nets.erase(gnd_net->name);
+            ctx->cells.erase(ctx->id("$PACKER_GND_DRV"));
+            log_info("pcbFPGA: Removed GND net and driver\n");
+        } else {
+            log_info("pcbFPGA: GND Driver %s\n", gnd_net->driver.cell->type.c_str(ctx));
+            int count = 0;
+            for(auto& user : gnd_net->users) {
+                log_info("pcbFPGA: GND net has user %s:%s %s\n", user.cell->type.c_str(ctx), user.port.c_str(ctx), user.cell->name.c_str(ctx));
+                count++;
+            }
+            log_info("pcbFPGA: GND net has %d users\n", count);
+        }
+
+        // Check if LUTs have full width
+        IdString lut_id = ctx->id("PCBFPGA_LUT");
+        IdString k_id = ctx->id("K");
+        for (const auto& cell : ctx->cells) {
+            const auto& ci = cell.second;
+            if (ci->type == lut_id) {
+                // Check if LUT has full width
+                int lut_k = ci->params[k_id].as_int64();
+                if (lut_k != K) {
+                    log_error("pcbFPGA: LUT %s has width %d, expected %d\n", ci->name.c_str(ctx), lut_k, K);
                 }
             }
         }
@@ -448,7 +446,7 @@ struct PcbfpgaImpl : ViaductAPI
         return parameter;
     }
 
-    void create_bel_inout_wire(int x, int y, const std::string& inout_name, const std::string& bel_name, BelId b, TileWireMap_t& tile_wires, const PortType io_type) {
+    void create_bel_inout_wire(const int x, const int y, const std::string& inout_name, const std::string& bel_name, BelId b, TileWireMap_t& tile_wires, const PortType io_type) {
         int start, end;
         const std::string name = parse_name_range(inout_name, end, start);
 

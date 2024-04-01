@@ -14,9 +14,11 @@ synth -run coarse
 memory_map
 opt -full
 iopadmap -bits -inpad INBUF O:PAD -outpad OUTBUF I:PAD
+stat
 techmap -map +/techmap.v
 opt -fast
-dfflegalize -cell \$_DFF_P_ 0
+dfflegalize -cell \$_DFF_P_ x -cell \$_DFFE_PP_ x -cell \$_SDFF_PP0_ x -cell \$_SDFF_PN0_ x -cell \$_SDFFCE_PN0P_ x -cell \$_SDFFCE_PP0P_ x -minsrst 4 -mince 4
+stat
 abc -lut $LUT_K -dress
 clean
 techmap -D LUT_K=$LUT_K -map [file dirname [file normalize $argv0]]/pcbfpga_map.v
