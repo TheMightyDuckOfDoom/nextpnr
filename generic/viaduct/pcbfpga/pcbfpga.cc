@@ -81,29 +81,68 @@ struct PcbfpgaImpl : ViaductAPI
         h.remove_nextpnr_iobs(top_ports);
 
         // Replace constants drivers
-        h.replace_constants(CellTypePort(id_VCC_DRV, id_ONE), CellTypePort(id_GND_DRV, id_ZERO));
-        
-        // Remove unused VCC net and driver
-        auto& vcc_net  = ctx->nets.at(ctx->id("$PACKER_VCC"));
-        if (vcc_net->users.empty()) {
-            log_info("pcbFPGA: VCC net has no users\n");
-            ctx->nets.erase(vcc_net->name);
-            ctx->cells.erase(ctx->id("$PACKER_VCC_DRV"));
-            log_info("pcbFPGA: Removed VCC net and driver\n");
+        if(false) {
+            h.replace_constants(CellTypePort(id_VCC_DRV, id_ONE), CellTypePort(id_GND_DRV, id_ZERO));
+            
+            // Remove unused VCC net and driver
+            auto& vcc_net  = ctx->nets.at(ctx->id("$PACKER_VCC"));
+            if (vcc_net->users.empty()) {
+                log_info("pcbFPGA: VCC net has no users\n");
+                ctx->nets.erase(vcc_net->name);
+                ctx->cells.erase(ctx->id("$PACKER_VCC_DRV"));
+                log_info("pcbFPGA: Removed VCC net and driver\n");
+            } else {
+                log_info("pcbFPGA: VCC Driver %s\n", vcc_net->driver.cell->type.c_str(ctx));
+                int count = 0;
+                for(auto& user : vcc_net->users) {
+                    log_info("pcbFPGA: VCC net has user %s:%s %s\n", user.cell->type.c_str(ctx), user.port.c_str(ctx), user.cell->name.c_str(ctx));
+                    count++;
+                }
+                log_info("pcbFPGA: VCC net has %d users\n", count);
+            }
+
+            // Remove unused GND net and driver 
+            auto& gnd_net  = ctx->nets.at(ctx->id("$PACKER_GND"));
+            if (gnd_net->users.empty()) {
+                log_info("pcbFPGA: GND net has no users\n");
+                ctx->nets.erase(gnd_net->name);
+                ctx->cells.erase(ctx->id("$PACKER_GND_DRV"));
+                log_info("pcbFPGA: Removed GND net and driver\n");
+            } else {
+                log_info("pcbFPGA: GND Driver %s\n", gnd_net->driver.cell->type.c_str(ctx));
+                int count = 0;
+                for(auto& user : gnd_net->users) {
+                    log_info("pcbFPGA: GND net has user %s:%s %s\n", user.cell->type.c_str(ctx), user.port.c_str(ctx), user.cell->name.c_str(ctx));
+                    count++;
+                }
+                log_info("pcbFPGA: GND net has %d users\n", count);
+            }
         }
 
-        // Remove unused GND net and driver 
-        auto& gnd_net  = ctx->nets.at(ctx->id("$PACKER_GND"));
-        if (gnd_net->users.empty()) {
-            log_info("pcbFPGA: GND net has no users\n");
-            ctx->nets.erase(gnd_net->name);
-            ctx->cells.erase(ctx->id("$PACKER_GND_DRV"));
-            log_info("pcbFPGA: Removed GND net and driver\n");
+        // Constrain Cell Pairs
+        for(auto& pair : constrain_cell_pairs) {
+            // Get Ports
+            int driver_start, driver_end;
+            int user_start, user_end;
+            std::string driver_port = parse_name_range(pair.driver_port, driver_end, driver_start);
+            std::string user_port   = parse_name_range(pair.user_port,   user_end,   user_start);
+
+            // Get BELs
+            IdString driver_bel_id = ctx->id(pair.driver_bel);
+            IdString user_bel_id   = ctx->id(pair.user_bel);
+
+            // Constrain Driver Bel:Driver Port to User Bel:User Port
+            if((driver_start == driver_end) && (user_start == user_end)) {
+                // One Driver Port, One User Port
+                IdString user_port_id = ctx->idf("%s", user_port.c_str());
+                int count = h.constrain_cell_pairs(pool<CellTypePort>{{driver_bel_id, ctx->id(driver_port)}}, pool<CellTypePort>{{user_bel_id, user_port_id}}, 1, false);
+                log_info("pcbFPGA: Constrained single driver %d %s:%s to single user %s:%s\n", count, pair.driver_bel.c_str(), driver_port.c_str(), pair.user_bel.c_str(), user_port.c_str());
+            }
+            else {
+                log_error("pcbFPGA: Constrained ranges not supported yet\n");
+            }
         }
 
-        // Constrain directly connected LUTs and FFs together to use dedicated resources
-        int lutffs = h.constrain_cell_pairs(pool<CellTypePort>{{id_LUT, id_F}}, pool<CellTypePort>{{id_DFF, id_D}}, 1, false);
-        log_info("pcbFPGA: Constrained %d LUTFF pairs.\n", lutffs);
         log_info("pcbFPGA: Packing complete.\n");
     }
 
@@ -125,6 +164,14 @@ struct PcbfpgaImpl : ViaductAPI
     // Tile wire map: Maps Bel names to a list of wires
     typedef dict<std::string, std::vector<WireId>> TileWireMap_t;
 
+    typedef struct {
+        std::string driver_bel;
+        std::string driver_port;
+        std::string user_bel;
+        std::string user_port;
+    } ConstrainCellPair_t;
+
+    std::vector<ConstrainCellPair_t> constrain_cell_pairs;
     std::vector<std::vector<std::string>> tile_types;
     std::vector<std::vector<TileWireMap_t>> wires_per_tile;
 
@@ -232,12 +279,31 @@ struct PcbfpgaImpl : ViaductAPI
             log_info("pcbFPGA:\n");
         }
     }
+    // Parse Constrain Cell Pairs from JSON Tiles
+    void parse_constrain_cell_pairs() {
+        // Loop over Tiles
+        for(auto& tile_json : tiles_json.array_items()) {
+            // Loop over Constrain Cell Pairs
+            for(auto& pair_json : tile_json["constrain_cell_pairs"].array_items()) {
+                ConstrainCellPair_t pair;
+                pair.driver_bel = pair_json["driver_bel"].string_value();
+                pair.driver_port = pair_json["driver_port"].string_value();
+                pair.user_bel = pair_json["user_bel"].string_value();
+                pair.user_port = pair_json["user_port"].string_value();
+                constrain_cell_pairs.push_back(pair);
+            }
+        }
+        log_info("pcbFPGA: Parsed %ld constrain cell pairs\n", constrain_cell_pairs.size());
+    }
     // Create Tiles
     void init_tiles()
     {
         // Mesh must be at least 5x5 -> IOBs on each side and one CLB in the middle
         NPNR_ASSERT(X >= 5);
         NPNR_ASSERT(Y >= 5);
+
+        // Parse Constrain Cell Pairs
+        parse_constrain_cell_pairs();
 
         json11::Json iob_tile = find_tile_json("IOB");
         json11::Json clb_tile = find_tile_json("CLB");
