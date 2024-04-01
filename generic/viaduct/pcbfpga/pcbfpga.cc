@@ -66,6 +66,7 @@ struct PcbfpgaImpl : ViaductAPI
         h.init(ctx);
         init_tiles();
         init_pips();
+        print_mesh();
         log_info("pcbFPGA: Architecture initialized.\n");
     }
 
@@ -211,6 +212,26 @@ struct PcbfpgaImpl : ViaductAPI
         }
         return json11::Json();
     }
+    // Print mesh
+    void print_mesh() {
+        log_info("pcbFPGA:      ");
+        for(int x = 0; x < X; x++)
+           log("%3d ", x);
+        log("\n");
+        for(int y = 0; y < Y; y++) {
+            log_info("pcbFPGA: %3d: ", y);
+            auto& row_tile_types = tile_types.at(y);
+            for(int x = 0; x < X; x++) {
+                std::string tile_type = row_tile_types.at(x);
+                if (tile_type == "")
+                    log("    "); 
+                else
+                    log("%s ", tile_type.c_str());
+            }
+            log("\n");
+            log_info("pcbFPGA:\n");
+        }
+    }
     // Create Tiles
     void init_tiles()
     {
@@ -222,6 +243,9 @@ struct PcbfpgaImpl : ViaductAPI
         json11::Json clb_tile = find_tile_json("CLB");
         json11::Json icb_tile = find_tile_json("icb");
         json11::Json ccb_tile = find_tile_json("ccb");
+        json11::Json qsb_tile = find_tile_json("qsb");
+        json11::Json tsb_tile = find_tile_json("tsb");
+        json11::Json dsb_tile = find_tile_json("dsb");
 
         log_info("pcbFPGA: Creating tiles...\n");
         // IOB: Input Output Buffers -> Next to ICBs
@@ -260,19 +284,19 @@ struct PcbfpgaImpl : ViaductAPI
                 if(mesh_utils::is_qsb(x, y, X, Y)) {
                     NPNR_ASSERT(row_tile_types.at(x) == "");
                     qsb_count++;
-                    row_tile_types.at(x) = "qsb";
+                    row_tile_types.at(x) = create_tile_from_json(x, y, qsb_tile);
                     continue;
                 }
                 if(mesh_utils::is_tsb(x, y, X, Y)) {
                     NPNR_ASSERT(row_tile_types.at(x) == "");
                     tsb_count++;
-                    row_tile_types.at(x) = "tsb";
+                    row_tile_types.at(x) = create_tile_from_json(x, y, tsb_tile);
                     continue;
                 }
                 if(mesh_utils::is_dsb(x, y, X, Y)) {
                     NPNR_ASSERT(row_tile_types.at(x) == "");
                     dsb_count++;
-                    row_tile_types.at(x) = "dsb";
+                    row_tile_types.at(x) = create_tile_from_json(x, y, dsb_tile);
                     continue;
                 }
                 if (mesh_utils::is_ccb(x, y, X, Y)) {
@@ -298,23 +322,6 @@ struct PcbfpgaImpl : ViaductAPI
         log_info("pcbFPGA: \tDSBs: %d\n", dsb_count);
         log_info("pcbFPGA: \tCCBs: %d\n", ccb_count);
         log_info("pcbFPGA: \tICBs: %d\n", icb_count);
-        log_info("pcbFPGA:      ");
-        for(int x = 0; x < X; x++)
-           log("%3d ", x);
-        log("\n");
-        for(int y = 0; y < Y; y++) {
-            log_info("pcbFPGA: %3d: ", y);
-            auto& row_tile_types = tile_types.at(y);
-            for(int x = 0; x < X; x++) {
-                std::string tile_type = row_tile_types.at(x);
-                if (tile_type == "")
-                    log("    "); 
-                else
-                    log("%s ", tile_type.c_str());
-            }
-            log("\n");
-            log_info("pcbFPGA:\n");
-        }
     }
 
     // Parses a name of the form "name[end:start]"
@@ -443,6 +450,42 @@ struct PcbfpgaImpl : ViaductAPI
             bel_count += num_per_tile;
         }
 
+        // Create Wires
+        for(const auto& wire_json : tile_json["wires"].array_items()) {
+            // Get config
+            const std::string wire_name = wire_json["name"].string_value();
+            const int num_wires = std::max(lookup_param(wire_json["num_wires"]).int_value(), 1);
+
+            // Get the tile wires
+            auto& tile_wires = wires_per_tile.at(y).at(x);
+
+            log_info("pcbFPGA: \tCreating %d %s wires at (%d, %d)\n", num_wires, wire_name.c_str(), x, y);
+
+            // Create num_per_tile wires
+            if(num_wires > 1) {
+                for (int z = 0; z < num_wires; z++) {
+                    // Unique wire ID at this location
+                    std::string unique_wire_name = wire_name + "[" + std::to_string(z) + "]";
+                    IdString unique_wire_id = ctx->id(unique_wire_name);
+
+                    log_info("pcbFPGA: \t\tCreating wire %s%d at (%d, %d, %d)\n", wire_name.c_str(), z, x, y, z);
+
+                    // Create Wire
+                    WireId w = ctx->addWire(h.xy_id(x, y, unique_wire_id), unique_wire_id, x, y);
+                    tile_wires["TILE"].push_back(w);
+                }
+            } else {
+                // Unique wire ID at this location
+                IdString unique_wire_id = ctx->id(wire_name);
+
+                log_info("pcbFPGA: \t\tCreating wire %s at (%d, %d)\n", wire_name.c_str(), x, y);
+
+                // Create Wire
+                WireId w = ctx->addWire(h.xy_id(x, y, unique_wire_id), unique_wire_id, x, y);
+                tile_wires["TILE"].push_back(w);
+            }
+        }
+
         return tile_json["tile_type"].string_value();
     }
 
@@ -513,7 +556,14 @@ struct PcbfpgaImpl : ViaductAPI
                 // Get Hierarchical Name
                 std::string hier_wire_name = ctx->nameOfWire(wire);
                 // Get the wire name
-                std::string bel_wire_name = hier_wire_name.substr(hier_wire_name.find_last_of("_") + 1);
+                std::string bel_wire_name = hier_wire_name.substr(hier_wire_name.find_last_of("/") + 1);
+
+                // Remove Bel from wire name
+                if(bel_wire_name.find_last_of("_") != std::string::npos) {
+                    bel_wire_name = bel_wire_name.substr(bel_wire_name.find_last_of("_") + 1);
+                }
+
+                // Check if wire name matches
                 if(bel_wire_name.substr(0, bel_wire_name.find_first_of("[")) == wire_name) {
                     wires.push_back(wire);
                 }
