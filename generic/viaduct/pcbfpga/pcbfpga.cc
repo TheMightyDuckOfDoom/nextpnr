@@ -117,6 +117,20 @@ struct PcbfpgaImpl : ViaductAPI
                 }
                 log_info("pcbFPGA: GND net has %d users\n", count);
             }
+        } else {
+            // Check if LUTs have full width
+            IdString lut_id = ctx->id("LUT");
+            IdString k_id = ctx->id("K");
+            for (const auto& cell : ctx->cells) {
+                const auto& ci = cell.second;
+                if (ci->type == lut_id) {
+                    // Check if LUT has full width
+                    int lut_k = ci->params[k_id].as_int64();
+                    if (lut_k != K) {
+                        log_error("pcbFPGA: LUT %s has width %d, expected %d\n", ci->name.c_str(ctx), lut_k, K);
+                    }
+                }
+            }
         }
 
         // Constrain Cell Pairs
@@ -576,7 +590,7 @@ struct PcbfpgaImpl : ViaductAPI
     }
 
     // Create PIPs for a tile
-    void create_pips_for_tile(int x, int y, json11::Json pip_json, bool internal) {
+    void create_pips_for_tile(int x, int y, json11::Json pip_json, bool internal, bool debug = false) {
         // Get Tile names
         const std::string src_tile_name = pip_json["src_tile"].string_value();
         const std::string dst_tile_name = pip_json["dst_tile"].string_value();
@@ -589,8 +603,8 @@ struct PcbfpgaImpl : ViaductAPI
         const delay_t delay = std::max((float) lookup_param(pip_json["delay"]).number_value(), 0.01f);
 
         // Find the source and destination tiles and bel wires
-        auto src_wires_per_bel = find_wires_for_tile_neighbour(x, y, src_tile_name);
-        auto dst_wires_per_bel = find_wires_for_tile_neighbour(x, y, dst_tile_name);
+        auto src_wires_per_bel = find_wires_for_tile_neighbour(x, y, src_tile_name, debug);
+        auto dst_wires_per_bel = find_wires_for_tile_neighbour(x, y, dst_tile_name, debug);
 
 
         // Filter out the source wires
@@ -605,10 +619,12 @@ struct PcbfpgaImpl : ViaductAPI
                 std::string dst_x_y = dst_wire_name.substr(0, dst_wire_name.find_last_of("/"));
 
                 if (!internal && (src_x_y == dst_x_y)) {
-                    log_info("pcbFPGA: \tSkipping PIP from %s to %s with delay %f\n", ctx->nameOfWire(src_wire), ctx->nameOfWire(dst_wire), delay);
+                    if(debug)
+                        log_info("pcbFPGA: \tSkipping PIP from %s to %s with delay %f\n", ctx->nameOfWire(src_wire), ctx->nameOfWire(dst_wire), delay);
                     continue;
                 }
-                log_info("pcbFPGA: \tCreating PIP from %s to %s with delay %f\n", ctx->nameOfWire(src_wire), ctx->nameOfWire(dst_wire), delay);
+                if(debug)
+                    log_info("pcbFPGA: \tCreating PIP from %s to %s with delay %f\n", ctx->nameOfWire(src_wire), ctx->nameOfWire(dst_wire), delay);
                 add_pip(Loc(x, y, 0), src_wire, dst_wire, delay);
             }
         }
@@ -617,7 +633,6 @@ struct PcbfpgaImpl : ViaductAPI
     std::vector<WireId> filter_bel_wires(const TileWireMap_t& bel_wires, const std::string& wire_name) {
         std::vector<WireId> wires;
         for(const auto& bel_wire : bel_wires) {
-            log_info("pcbFPGA: bel %s\n", bel_wire.first.c_str());
             for(const auto& wire : bel_wire.second) {
                 // Get Hierarchical Name
                 std::string hier_wire_name = ctx->nameOfWire(wire);
@@ -639,11 +654,12 @@ struct PcbfpgaImpl : ViaductAPI
     }
 
     // Find BELs for a tile
-    TileWireMap_t find_wires_for_tile_neighbour(int x, int y, const std::string& tile_name) {
+    TileWireMap_t find_wires_for_tile_neighbour(int x, int y, const std::string& tile_name, bool debug = false) {
         TileWireMap_t wires;
         // Check tile itself
         if (tile_types.at(y).at(x) == tile_name) {
-            log_info("pcbFPGA: Found wires for same tile %s at (%d, %d)\n", tile_name.c_str(), x, y);
+            if(debug)
+                log_info("pcbFPGA: Found wires for same tile %s at (%d, %d)\n", tile_name.c_str(), x, y);
             for (auto& wire_dict_pair : wires_per_tile.at(y).at(x)) {
                 for (const auto& wire : wire_dict_pair.second) {
                     wires[wire_dict_pair.first].push_back(wire);
@@ -652,7 +668,8 @@ struct PcbfpgaImpl : ViaductAPI
         }
         // Check top neighbour
         if ((y > 0) && (tile_types.at(y - 1).at(x) == tile_name)) {
-            log_info("pcbFPGA: Found wires for tile top neighbor %s at (%d, %d)\n", tile_name.c_str(), x, y - 1);
+            if(debug)
+                log_info("pcbFPGA: Found wires for tile top neighbor %s at (%d, %d)\n", tile_name.c_str(), x, y - 1);
             for (auto& wire_dict_pair : wires_per_tile.at(y - 1).at(x)) {
                 for (const auto& wire : wire_dict_pair.second) {
                     wires[wire_dict_pair.first].push_back(wire);
@@ -661,7 +678,8 @@ struct PcbfpgaImpl : ViaductAPI
         }
         // Check bottom neighbour
         if ((y < (Y - 1)) && (tile_types.at(y + 1).at(x) == tile_name)) {
-            log_info("pcbFPGA: Found wires for tile bottom neighbor %s at (%d, %d)\n", tile_name.c_str(), x, y + 1);
+            if(debug)
+                log_info("pcbFPGA: Found wires for tile bottom neighbor %s at (%d, %d)\n", tile_name.c_str(), x, y + 1);
             for (auto& wire_dict_pair : wires_per_tile.at(y + 1).at(x)) {
                 for (const auto& wire : wire_dict_pair.second) {
                     wires[wire_dict_pair.first].push_back(wire);
@@ -670,7 +688,8 @@ struct PcbfpgaImpl : ViaductAPI
         }
         // Check left neighbour
         if ((x > 0) && (tile_types.at(y).at(x - 1) == tile_name)) {
-            log_info("pcbFPGA: Found wires for tile left neighbor %s at (%d, %d)\n", tile_name.c_str(), x - 1, y);
+            if(debug)
+                log_info("pcbFPGA: Found wires for tile left neighbor %s at (%d, %d)\n", tile_name.c_str(), x - 1, y);
             for (auto& wire_dict_pair : wires_per_tile.at(y).at(x - 1)) {
                 for (const auto& wire : wire_dict_pair.second) {
                     wires[wire_dict_pair.first].push_back(wire);
@@ -679,7 +698,8 @@ struct PcbfpgaImpl : ViaductAPI
         }
         // Check right neighbour
         if ((x < (X - 1)) && (tile_types.at(y).at(x + 1) == tile_name)) {
-            log_info("pcbFPGA: Found wires for tile right neighbor %s at (%d, %d)\n", tile_name.c_str(), x + 1, y);
+            if(debug)
+                log_info("pcbFPGA: Found wires for tile right neighbor %s at (%d, %d)\n", tile_name.c_str(), x + 1, y);
             for (auto& wire_dict_pair : wires_per_tile.at(y).at(x + 1)) {
                 for (const auto& wire : wire_dict_pair.second) {
                     wires[wire_dict_pair.first].push_back(wire);

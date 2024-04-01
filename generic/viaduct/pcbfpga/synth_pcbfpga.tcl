@@ -24,4 +24,7 @@ clean
 hierarchy -check
 stat
 
-if {$argc > 0} { yosys write_json [lindex $argv 0] }
+if {$argc > 0} { 
+  yosys write_json [lindex $argv 0].json
+  yosys write_verilog [lindex $argv 0]_synth.v
+}

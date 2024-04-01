@@ -6,7 +6,11 @@ module \$lut (A, Y);
 
 	localparam rep = 1<<(`LUT_K-WIDTH);
 
-	LUT #(.K(`LUT_K), .INIT({rep{LUT}})) _TECHMAP_REPLACE_ (.I(A), .F(Y));
+	wire [`LUT_K-1:0] lut_i;
+	
+	assign lut_i = {{WIDTH{A[WIDTH-1]}}, A};
+
+	LUT #(.K(`LUT_K), .INIT({rep{LUT}})) _TECHMAP_REPLACE_ (.I(lut_i), .F(Y));
 endmodule
 
 module  \$_DFF_P_ (input D, C, output Q); DFF  _TECHMAP_REPLACE_ (.D(D), .Q(Q), .CLK(C)); endmodule
