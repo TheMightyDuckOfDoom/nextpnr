@@ -669,8 +669,9 @@ struct PcbfpgaImpl : ViaductAPI
     }
 
     // Create PIPs
-    void init_pips() {
+    void init_pips(bool debug = false) {
         log_info("pcbFPGA: Creating PIPs...\n");
+        int count = 0;
         for(int y = 0; y < Y; y++) {
             auto& row_tile_types = tile_types.at(y);
             for(int x = 0; x < X; x++) {
@@ -678,18 +679,54 @@ struct PcbfpgaImpl : ViaductAPI
                 if (tile_json != json11::Json()) {
                     log_info("pcbFPGA: Creating PIPs for tile %s at (%d, %d)\n", tile_json["tile_type"].string_value().c_str(), x, y);
                     for (const auto& pip_json : tile_json["pips"].array_items()) {
-                        create_pips_for_tile(x, y, pip_json, false);
+                        count += create_pips_for_tile(x, y, pip_json, false, debug);
                     }
                     for (const auto& pip_json : tile_json["internal_pips"].array_items()) {
-                        create_pips_for_tile(x, y, pip_json, true);
+                        count += create_pips_for_tile(x, y, pip_json, true, debug);
                     }
                 }
             }
         }
+        log_info("pcbFPGA: Created %d PIPs\n", count);
+    }
+
+    typedef enum {
+        FULL,
+        WILTON,
+        DISJOINT
+    } connection_style_e;
+
+    // Connection Style to String
+    std::string connection_style_to_string(const connection_style_e connection) const {
+        switch(connection) {
+            case FULL:
+                return "full";
+            case WILTON:
+                return "wilton";
+            case DISJOINT:
+                return "disjoint";
+        }
+        return "unknown";
+    }
+
+    // Parse Connection Style
+    connection_style_e parse_connection_style(const std::string& connection) const {
+        if(connection == "" || connection == "full") {
+            return FULL;
+        } else if(connection == "wilton") {
+            return WILTON;
+        } else if(connection == "disjoint") {
+            return DISJOINT;
+        } else {
+            log_error("pcbFPGA: Connection style %s not supported\n", connection.c_str());
+        }
     }
 
     // Create PIPs for a tile
-    void create_pips_for_tile(int x, int y, json11::Json pip_json, bool internal, bool debug = false) {
+    int create_pips_for_tile(int x, int y, json11::Json pip_json, bool internal, bool debug = false) {
+        // Connection style -> Default is full
+        const connection_style_e connection_style = parse_connection_style(lookup_param(pip_json["connection"]).string_value());
+
         // Get Tile names
         const std::string src_tile_name = pip_json["src_tile"].string_value();
         const std::string dst_tile_name = pip_json["dst_tile"].string_value();
@@ -705,17 +742,20 @@ struct PcbfpgaImpl : ViaductAPI
         auto src_wires_per_bel = find_wires_for_tile_neighbour(x, y, src_tile_name, debug);
         auto dst_wires_per_bel = find_wires_for_tile_neighbour(x, y, dst_tile_name, debug);
 
-
         // Filter out the source wires
         auto src_wires = filter_bel_wires(src_wires_per_bel, src_wire_name);
         auto dst_wires = filter_bel_wires(dst_wires_per_bel, dst_wire_name);
 
+        int count = 0;
         for(const auto& src_wire : src_wires) {
-            std::string src_wire_name = ctx->nameOfWire(src_wire);
-            std::string src_x_y = src_wire_name.substr(0, src_wire_name.find_last_of("/"));
+            std::string hier_src_wire_name = ctx->nameOfWire(src_wire);
+            std::string src_x_y = hier_src_wire_name.substr(0, hier_src_wire_name.find_last_of("/"));
+            std::string src_wire_index = hier_src_wire_name.substr(hier_src_wire_name.find_last_of("[") + 1, hier_src_wire_name.find_last_of(']'));
+            
             for(const auto& dst_wire : dst_wires) {
-                std::string dst_wire_name = ctx->nameOfWire(dst_wire);
-                std::string dst_x_y = dst_wire_name.substr(0, dst_wire_name.find_last_of("/"));
+                std::string hier_dst_wire_name = ctx->nameOfWire(dst_wire);
+                std::string dst_x_y = hier_dst_wire_name.substr(0, hier_dst_wire_name.find_last_of("/"));
+                std::string dst_wire_index = hier_dst_wire_name.substr(hier_dst_wire_name.find_last_of("[") + 1, hier_dst_wire_name.find_last_of(']'));
 
                 if (!internal && (src_x_y == dst_x_y)) {
                     if(debug)
@@ -724,9 +764,18 @@ struct PcbfpgaImpl : ViaductAPI
                 }
                 if(debug)
                     log_info("pcbFPGA: \tCreating PIP from %s to %s with delay %f\n", ctx->nameOfWire(src_wire), ctx->nameOfWire(dst_wire), delay);
+
+                // Disjoint connection -> Only same wires with same index can be connected
+                if((connection_style == DISJOINT) && (src_wire_index != dst_wire_index)) {
+                    if(debug)
+                        log_info("pcbFPGA: \t\tSkipping PIP due to disjoint connection style %s != %s\n", src_wire_index.c_str(), dst_wire_index.c_str());
+                    continue;
+                }
                 add_pip(Loc(x, y, 0), src_wire, dst_wire, delay);
+                count++;
             }
         }
+        return count;
     }
 
     std::vector<WireId> filter_bel_wires(const TileWireMap_t& bel_wires, const std::string& wire_name) {
