@@ -104,3 +104,19 @@ module  \$_SDFFCE_PP0P_ (input D, C, R, E, output Q);
 				.EN  ( E )
 		);
 endmodule
+
+module \ibuf (input i, output o);
+	IOB #(.OUTPUT(0), .ENABLE_OUTPUT(0)) _TECHMAP_REPLACE_(.PAD(i), .O(o));
+endmodule
+
+module \obuf (output o, input i);
+	IOB #(.OUTPUT(1), .ENABLE_OUTPUT(1)) _TECHMAP_REPLACE_(.PAD(o), .I(i));
+endmodule
+
+module \obuft (output Y, input A, input E);
+	IOB #(.OUTPUT(1), .ENABLE_OUTPUT(0)) _TECHMAP_REPLACE_(.PAD(Y), .I(A), .EN(E));
+endmodule
+
+module \$_TBUF_ (output Y, input A, input E);
+	IOB #(.OUTPUT(1), .ENABLE_OUTPUT(0)) _TECHMAP_REPLACE_(.PAD(Y), .I(A), .EN(E));
+endmodule

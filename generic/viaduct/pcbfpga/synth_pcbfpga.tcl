@@ -13,7 +13,7 @@ deminout
 synth -run coarse
 memory_map
 opt -full
-iopadmap -bits -inpad INBUF O:PAD -outpad OUTBUF I:PAD
+iopadmap -bits -inpad ibuf o:i -outpad obuf i:o
 stat
 techmap -map +/techmap.v
 opt -fast
@@ -21,6 +21,8 @@ dfflegalize -cell \$_DFF_P_ x -cell \$_DFFE_PP_ x -cell \$_SDFF_PP0_ x -cell \$_
 stat
 abc -lut $LUT_K -dress
 clean
+extract -map [file dirname [file normalize $argv0]]/pcbfpga_merge.v
+stat
 techmap -D LUT_K=$LUT_K -map [file dirname [file normalize $argv0]]/pcbfpga_map.v
 clean
 hierarchy -check

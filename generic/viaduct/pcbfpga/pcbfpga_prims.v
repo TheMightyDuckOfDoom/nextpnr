@@ -29,17 +29,28 @@ module PCBFPGA_FF #(
 		end
 endmodule
 
-module INBUF (
-    input  PAD,
-    output O,
+module ibuf (
+    (* iopad_external_pin *) input i,
+    output o
 );
-    assign O = PAD;
 endmodule
 
-module OUTBUF (
-    output PAD,
-    input  I,
+module obuf (
+    input i,
+    (* iopad_external_pin *) output o
 );
-    assign PAD = I;
+endmodule
+
+module IOB #(
+	parameter OUTPUT = 0,
+	parameter ENABLE_OUTPUT = 0
+)(
+    (* iopad_external_pin *) inout  PAD,
+    input  I,
+		input  EN,
+		output O
+);
+	assign O = PAD;
+	assign PAD = (OUTPUT & (EN | ENABLE_OUTPUT)) ? I : 1'bZ;
 endmodule
 

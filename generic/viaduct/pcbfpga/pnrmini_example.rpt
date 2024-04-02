@@ -1,0 +1,1 @@
+{"critical_paths": [], "detailed_net_timings": [], "fmax": {}, "utilization": {"IOB": {"available": 16, "used": 9}, "PCBFPGA_FF": {"available": 4, "used": 2}, "PCBFPGA_LUT": {"available": 4, "used": 2}}}

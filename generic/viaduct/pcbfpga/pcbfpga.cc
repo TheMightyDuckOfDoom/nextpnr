@@ -78,7 +78,7 @@ struct PcbfpgaImpl : ViaductAPI
                 CellTypePort(id_INBUF, id_PAD),
                 CellTypePort(id_OUTBUF, id_PAD),
         };
-        h.remove_nextpnr_iobs(top_ports);
+        remove_nextpnr_iobs(top_ports);
 
         // Replace constants drivers
         h.replace_constants(CellTypePort(id_VCC_DRV, id_ONE), CellTypePort(id_GND_DRV, id_ZERO));
@@ -186,6 +186,37 @@ struct PcbfpgaImpl : ViaductAPI
     std::vector<ConstrainCellPair_t> constrain_cell_pairs;
     std::vector<std::vector<std::string>> tile_types;
     std::vector<std::vector<TileWireMap_t>> wires_per_tile;
+
+    std::set<IdString> bel_types;
+
+    void remove_nextpnr_iobs(const pool<CellTypePort> &top_ports)
+    {
+        std::vector<IdString> to_remove;
+        for (auto &cell : ctx->cells) {
+            auto &ci = *cell.second;
+            if (!ci.type.in(ctx->id("$nextpnr_ibuf"), ctx->id("$nextpnr_obuf"), ctx->id("$nextpnr_iobuf")))
+                continue;
+            NetInfo *i = ci.getPort(ctx->id("I"));
+            if (i && i->driver.cell) {
+                if (!top_ports.count(CellTypePort(i->driver)))
+                    log_error("Top-level port '%s' driven by illegal port %s.%s\n", ctx->nameOf(&ci),
+                            ctx->nameOf(i->driver.cell), ctx->nameOf(i->driver.port));
+            }
+            NetInfo *o = ci.getPort(ctx->id("O"));
+            if (o) {
+                for (auto &usr : o->users) {
+                    if (!top_ports.count(CellTypePort(usr)) && usr.port != id_PAD)
+                        log_error("Top-level port '%s' driving illegal port %s.%s\n", ctx->nameOf(&ci),
+                                ctx->nameOf(usr.cell), ctx->nameOf(usr.port));
+                }
+            }
+            ci.disconnectPort(ctx->id("I"));
+            ci.disconnectPort(ctx->id("O"));
+            to_remove.push_back(ci.name);
+        }
+        for (IdString cell_name : to_remove)
+            ctx->cells.erase(cell_name);
+    }
 
     // Get an integer from a JSON object
     int get_json_int(const json11::Json &json, const std::string &key, bool required = false, int def = -1) const {
@@ -446,7 +477,7 @@ struct PcbfpgaImpl : ViaductAPI
         return parameter;
     }
 
-    void create_bel_inout_wire(const int x, const int y, const std::string& inout_name, const std::string& bel_name, BelId b, TileWireMap_t& tile_wires, const PortType io_type) {
+    void create_bel_inout_wire(const int x, const int y, const std::string& inout_name, const std::string& bel_name, const BelId b, TileWireMap_t& tile_wires, const PortType io_type) {
         int start, end;
         const std::string name = parse_name_range(inout_name, end, start);
 
@@ -474,6 +505,41 @@ struct PcbfpgaImpl : ViaductAPI
         }
     }
 
+    void add_bel_inout_timing(const IdString bel_type_id, const std::string& inout_name, const json11::Json timing) {
+        // Construct inout name id 
+        int inout_start, inout_end;
+        IdString inout_id = ctx->id(parse_name_range(inout_name, inout_end, inout_start));
+
+        // Check if inout is a range
+        if(inout_start != inout_end) {
+            log_error("pcbFPGA: add_bel_inout_timing: Ranges not supported yet\n");
+        }
+
+        for(const auto& timing : timing.array_items()) {
+            delay_t value = std::max((float) lookup_param(timing["value"]).number_value(), 0.01f);
+
+            const std::string timing_type = timing["type"].string_value();
+            if (timing_type == "delay") {
+                int from_start, from_end;
+                std::string from_name = parse_name_range(timing["from"].string_value(), from_end, from_start);
+
+                for(int i = from_start; i <= from_end; i++) {
+                    IdString from_id;
+                    if(from_start == from_end) {
+                        from_id = ctx->id(from_name);
+                    } else {
+                        from_id = ctx->id(from_name + "[" + std::to_string(i) + "]");
+                    }
+
+                    log_info("pcbFPGA: \t\t\tAdding delay from %s to %s with delay %f\n", from_name.c_str(), inout_name.c_str(), value);
+                    ctx->addCellTimingDelay(bel_type_id, from_id, inout_id, value);
+                }
+            } else {
+                log_error("pcbFPGA: add_bel_inout_timing: Timing type %s not implemented for inout named %s\n", timing_type.c_str(), inout_name.c_str());
+            }
+        }
+    }
+
     // Create Tile (BEL and Wires) from JSON configuration
     std::string create_tile_from_json(int x, int y, json11::Json tile_json) {
         log_info("pcbFPGA: Creating tile at (%d, %d)\n", x, y);
@@ -493,6 +559,22 @@ struct PcbfpgaImpl : ViaductAPI
             // ID of BEL type -> Same for all BELs of this type
             IdString bel_type_id = ctx->idf("%s", bel_name.c_str());
 
+            // Timing
+            if(bel_types.find(bel_type_id) == bel_types.end()) {
+                for(const auto& input_json : bel_json["inputs"].array_items()) {
+                    if(input_json.is_object())
+                        add_bel_inout_timing(bel_type_id, input_json["name"].string_value(), input_json["timing"]);
+                }
+                for(const auto& inout_json : bel_json["inouts"].array_items()) {
+                    if(inout_json.is_object())
+                        add_bel_inout_timing(bel_type_id, inout_json["name"].string_value(), inout_json["timing"]);
+                }
+                for(const auto& output_json : bel_json["outputs"].array_items()) {
+                    if(output_json.is_object())
+                        add_bel_inout_timing(bel_type_id, output_json["name"].string_value(), output_json["timing"]);
+                }
+            }
+
             // Create num_per_tile BELs
             for (int z = bel_count; z < bel_count + num_per_tile; z++) {
                 // Unique BEL ID at this location
@@ -507,25 +589,44 @@ struct PcbfpgaImpl : ViaductAPI
                 // Add Inputs
                 if (bel_json["inputs"].is_array()) {
                     for (const auto &input : bel_json["inputs"].array_items()) {
-                       create_bel_inout_wire(x, y, input.string_value(), unique_bel_name, b, tile_wires, PORT_IN);
+                       std::string name;
+                       if(input.is_string()) {
+                           name = input.string_value();
+                       } else {
+                           name = input["name"].string_value();
+                       }
+                       create_bel_inout_wire(x, y, name, unique_bel_name, b, tile_wires, PORT_IN);
                     }
                 }
 
                 // Add Inouts
                 if (bel_json["inouts"].is_array()) {
                     for (const auto &inout : bel_json["inouts"].array_items()) {
-                        create_bel_inout_wire(x, y, inout.string_value(), unique_bel_name, b, tile_wires, PORT_INOUT);
+                       std::string name;
+                       if(inout.is_string()) {
+                           name = inout.string_value();
+                       } else {
+                           name = inout["name"].string_value();
+                       }
+                        create_bel_inout_wire(x, y, name, unique_bel_name, b, tile_wires, PORT_INOUT);
                     }
                 }
 
                 // Add Outputs
                 if (bel_json["outputs"].is_array()) {
                     for (const auto &output : bel_json["outputs"].array_items()) {
-                        create_bel_inout_wire(x, y, output.string_value(), unique_bel_name, b, tile_wires, PORT_OUT);
+                       std::string name;
+                       if(output.is_string()) {
+                           name = output.string_value();
+                       } else {
+                           name = output["name"].string_value();
+                       }
+                        create_bel_inout_wire(x, y, name, unique_bel_name, b, tile_wires, PORT_OUT);
                     }
                 }
             }
             bel_count += num_per_tile;
+            bel_types.insert(bel_type_id);
         }
 
         // Create Wires
@@ -711,22 +812,6 @@ struct PcbfpgaImpl : ViaductAPI
     {
         IdStringList name = IdStringList::concat(ctx->getWireName(dst), ctx->getWireName(src));
         return ctx->addPip(name, ctx->id("PIP"), src, dst, delay, loc);
-    }
-
-    // Bel bucket functions
-    IdString getBelBucketForCellType(IdString cell_type) const override
-    {
-        if (cell_type.in(id_INBUF, id_OUTBUF))
-            return id_IOB;
-        return cell_type;
-    }
-    bool isValidBelForCellType(IdString cell_type, BelId bel) const override
-    {
-        IdString bel_type = ctx->getBelType(bel);
-        if (bel_type == id_IOB)
-            return cell_type.in(id_INBUF, id_OUTBUF);
-        else
-            return (bel_type == cell_type);
     }
 };
 
