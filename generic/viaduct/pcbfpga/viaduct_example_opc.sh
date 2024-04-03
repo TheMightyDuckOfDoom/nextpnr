@@ -12,5 +12,5 @@ set -ex
 # opc8:      80 IOB 505 FF 1271 LUT
 yosys -p "tcl synth_pcbfpga.tcl opc 4 opc2cpu" ~/opc/opc2/opc2cpu.v
 # Run PnR
-config=$(realpath ~/pcbfpga/nextpnr_configs/opc.json)
+config=$(realpath ~/pcbfpga/nextpnr_configs/opc_opt.json)
 nextpnr-generic --uarch pcbfpga --json opc.json --router router2  --write pnropc.json --vopt "config=$config"
