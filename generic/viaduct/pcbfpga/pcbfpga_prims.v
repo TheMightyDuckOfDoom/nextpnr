@@ -35,6 +35,12 @@ module ibuf (
 );
 endmodule
 
+module iobuf (
+    input io,
+    (* iopad_external_pin *) inout PAD
+);
+endmodule
+
 module obuf (
     input i,
     (* iopad_external_pin *) output o

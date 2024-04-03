@@ -13,7 +13,7 @@ deminout
 synth -run coarse
 memory_map
 opt -full
-iopadmap -bits -inpad ibuf o:i -outpad obuf i:o
+iopadmap -bits -inpad ibuf o:i -outpad obuf i:o -inoutpad iobuf io:PAD [lindex $argv 2]
 stat
 techmap -map +/techmap.v
 opt -fast

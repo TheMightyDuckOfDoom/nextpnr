@@ -113,6 +113,10 @@ module \obuf (output o, input i);
 	IOB #(.OUTPUT(1), .ENABLE_OUTPUT(1)) _TECHMAP_REPLACE_(.PAD(o), .I(i));
 endmodule
 
+module \iobuft (output Y, input A, input E, inout PAD);
+	IOB #(.OUTPUT(1), .ENABLE_OUTPUT(0)) _TECHMAP_REPLACE_(.PAD(PAD), .I(A), .EN(E), .O(Y));
+endmodule
+
 module \obuft (output Y, input A, input E);
 	IOB #(.OUTPUT(1), .ENABLE_OUTPUT(0)) _TECHMAP_REPLACE_(.PAD(Y), .I(A), .EN(E));
 endmodule
