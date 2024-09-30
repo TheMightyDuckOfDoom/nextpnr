@@ -819,6 +819,10 @@ struct PcbfpgaImpl : ViaductAPI
         auto src_wires = filter_bel_wires(src_wires_per_bel, src_wire_name);
         auto dst_wires = filter_bel_wires(dst_wires_per_bel, dst_wire_name);
 
+        // src Sparse control
+        const int src_sparse_density = std::max(lookup_param(pip_json["src_sparse_density"]).int_value(), 1);
+        const int src_sparse_offset  = std::max(lookup_param(pip_json["src_sparse_offset"]).int_value(), 0);
+
         if(debug)
             log_info("%ld %ld %ld %ld\n", src_wires_per_bel.size(), dst_wires_per_bel.size(), src_wires.size(), dst_wires.size());
 
@@ -828,6 +832,15 @@ struct PcbfpgaImpl : ViaductAPI
             std::string src_x_y = hier_src_wire_name.substr(0, hier_src_wire_name.find_last_of("/"));
             std::string src_wire_name_and_index = hier_src_wire_name.substr(hier_src_wire_name.find_last_of("/") + 1);
             std::string src_wire_index = src_wire_name_and_index.substr(src_wire_name_and_index.find_last_of("[") + 1, src_wire_name_and_index.find_last_of(']'));
+
+            try {
+                int src_index = std::stoi(src_wire_index);
+                if((src_index % src_sparse_density) != src_sparse_offset) {
+                    if(true)
+                        log_info("pcbFPGA: \tSkipping PIP from %s to %s due to sparse control\n", ctx->nameOfWire(src_wire), dst_wire_name.c_str());
+                    continue;
+                }
+            } catch (std::invalid_argument& e) {}
             
             for(const auto& dst_wire : dst_wires) {
                 std::string hier_dst_wire_name = ctx->nameOfWire(dst_wire);
