@@ -43,12 +43,36 @@ struct PCBFPGAImpl : ViaductAPI
         ViaductAPI::init(ctx);
         h.init(ctx);
 
-        const size_t clbs_x = 2; 
-        const size_t clbs_y = clbs_x;
-        const size_t channel_width = 16; 
+        const size_t channel_width = 16;
+        assert(args_set);
 
         Mesh mesh(ctx, &h, clbs_x, clbs_y, channel_width);
         mesh.build();
+    }
+
+    void setArgs(const dict<std::string, std::string> &args) {
+        bool clbs_set = false;
+        for(auto arg : args) {
+            log_info("PCBFPGAImpl: %s = %s\n", arg.first.c_str(), arg.second.c_str());
+            if(arg.first == "clbs") {
+                auto cfg = arg.second;
+                if(cfg.find("x") != std::string::npos) {
+                    clbs_x = std::stoi(cfg.substr(0, cfg.find("x")));
+                    clbs_y = std::stoi(cfg.substr(cfg.find("x") + 1));
+
+                    log_info("PCBFPGAImpl: clbs_x = %ld, clbs_y = %ld\n", clbs_x, clbs_y);
+                    clbs_set = true;
+                } else {
+                    log_error("PCBFPGAImpl: clbs argument should have format NxM, where N,M integers\n");
+                }
+            }
+        }
+
+        if(!clbs_set) {
+            log_info("PCBFPGAImpl: clbs not set, using default %ldx%ld\n", clbs_x, clbs_y);
+        }
+
+        args_set = true;
     }
 
     void pack() override
@@ -70,6 +94,9 @@ struct PCBFPGAImpl : ViaductAPI
 
   private:
     ViaductHelpers h;
+    bool args_set = false;
+    size_t clbs_x = 2;
+    size_t clbs_y = clbs_x;
 
     IdString getBelBucketForCellType(IdString cell_type) const override
     {
@@ -92,7 +119,9 @@ struct PCBFPGAArch : ViaductArch
     PCBFPGAArch() : ViaductArch("pcbfpga") {};
     std::unique_ptr<ViaductAPI> create(const dict<std::string, std::string> &args)
     {
-        return std::make_unique<PCBFPGAImpl>();
+        auto impl = std::make_unique<PCBFPGAImpl>();
+        impl->setArgs(args);
+        return impl;
     }
 } pcbfpgaArch;
 } // namespace
