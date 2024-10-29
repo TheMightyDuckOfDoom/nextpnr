@@ -46,7 +46,7 @@ struct PCBFPGAImpl : ViaductAPI
         const size_t channel_width = 16;
         assert(args_set);
 
-        Mesh mesh(ctx, &h, clbs_x, clbs_y, channel_width);
+        mesh.init(ctx, &h, clbs_x, clbs_y, channel_width);
         mesh.build();
     }
 
@@ -92,11 +92,20 @@ struct PCBFPGAImpl : ViaductAPI
         log_info("Constrained %d LUTFF pairs.\n", lutffs);
     }
 
-  private:
-    ViaductHelpers h;
-    bool args_set = false;
-    size_t clbs_x = 2;
-    size_t clbs_y = clbs_x;
+    void prePlace() override {
+        assign_cell_info();
+        mesh.update_timing();
+    }
+
+    bool isBelLocationValid(BelId bel, bool explain_invalid) const override
+    {
+        Loc l = ctx->getBelLocation(bel);
+        if (ctx->getBelType(bel).in(id_LUT, id_DFF)) {
+            return slice_valid(l.x, l.y, l.z / 2);
+        } else {
+            return true;
+        }
+    }
 
     IdString getBelBucketForCellType(IdString cell_type) const override
     {
@@ -111,6 +120,63 @@ struct PCBFPGAImpl : ViaductAPI
         if(bel_type == id_IOB)
             return cell_type.in(id_IBUF, id_OBUF);
         return bel_type == cell_type;
+    }
+
+  private:
+    Mesh mesh;
+
+    ViaductHelpers h;
+    bool args_set = false;
+    size_t clbs_x = 2;
+    size_t clbs_y = clbs_x;
+
+    typedef struct {
+        const NetInfo *dff_clk = nullptr;
+    } cell_info_t;
+    std::vector<cell_info_t> cell_info;
+
+    void assign_cell_info()
+    {
+        cell_info.resize(ctx->cells.size());
+        for (auto &cell : ctx->cells) {
+            CellInfo *ci = cell.second.get();
+            auto &fc = cell_info.at(ci->flat_index);
+            if (ci->type == id_DFF) {
+                fc.dff_clk = ci->getPort(id_CLK);
+            }
+        }
+    }
+
+    bool slice_valid(int x, int y, int z) const
+    {
+        // Check that all DFFs in the slice are clocked by the same net
+        const NetInfo *clk_net = nullptr;
+        for(size_t slice = 0; slice < mesh.slices_per_clb; slice++) {
+            const CellInfo *dff = ctx->getBoundBelCell(ctx->getBelByLocation(Loc(x, y, slice * 2 + 1)));
+
+            if(dff == nullptr) {
+                continue;
+            }
+
+            const auto &dff_data = cell_info.at(dff->flat_index);
+            if(dff_data.dff_clk == nullptr) {
+                log_error("Slice at (%d, %d) has DFF without clock\n", x, y);
+                return false;
+            }
+
+            if(clk_net == nullptr) {
+                // Set the clock net for the whole CLB
+                clk_net = dff_data.dff_clk;
+                //log_info("Slice at (%d, %d, %ld) has clock net %s\n", x, y, slice, clk_net->name.c_str(ctx));
+            } else if(clk_net != dff_data.dff_clk) {
+                // Check if the clock net is the same for all DFFs in the slice
+                //log_warning("Slice at (%d, %d, %ld) has DFFs with different clocks\n", x, y, slice);
+                //log_info("    %s vs %s\n", clk_net->name.c_str(ctx), dff_data.dff_clk->name.c_str(ctx));
+                return false;
+            }
+        }
+
+        return true;
     }
 };
 

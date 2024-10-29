@@ -43,7 +43,7 @@ bool is_qsb(size_t x, size_t y, size_t dimX, size_t dimY) {
     return !is_perimeter(x, y, dimX, dimY) && (x % 2 == 1) && (y % 2 == 1);
 }
 
-Mesh::Mesh(Context *ctx, ViaductHelpers *h, size_t clbs_x, size_t clbs_y, size_t channel_width) {
+void Mesh::init(Context *ctx, ViaductHelpers *h, size_t clbs_x, size_t clbs_y, size_t channel_width) {
     this->ctx = ctx;
     this->h = h;
     this->clbs_x = clbs_x;
@@ -668,6 +668,30 @@ void Mesh::build_bels() {
     expected_bels += (clbs_x + clbs_y) * 2 * io_per_iob;
     log_info("Expected # BELs: %ld\n", expected_bels);
     assert(count == expected_bels);
+}
+
+void Mesh::update_lut_timing(const CellInfo *ci) {
+    for(size_t i = 0; i < lut_inputs; i++) {
+        ctx->addCellTimingDelay(ci->name, ctx->idf("I[%d]", i), id_F, lut_delay);
+    }
+}
+
+void Mesh::update_dff_timing(const CellInfo *ci) {
+    ctx->addCellTimingClock(ci->name, id_CLK);
+    ctx->addCellTimingSetupHold(ci->name, id_D, id_CLK, dff_setup, dff_hold);
+    ctx->addCellTimingClockToOut(ci->name, id_Q, id_CLK, dff_clk_to_q);
+}
+
+void Mesh::update_timing() {
+    for(auto &cell : ctx->cells) {
+        CellInfo *ci = cell.second.get();
+        if(ci->type == id_LUT)      update_lut_timing(ci);
+        else if(ci->type == id_DFF) update_dff_timing(ci);
+        else if(ci->type == id_IOB)  { }
+        else if(ci->type == id_IBUF) { }
+        else if(ci->type == id_OBUF) { }
+        else log_error("Unknown cell type %s\n", ci->type.c_str(ctx));
+    }
 }
 
 NEXTPNR_NAMESPACE_END

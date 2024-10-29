@@ -43,12 +43,17 @@ struct Mesh {
     const size_t clb_inputs_per_side = lut_inputs + 2;
     const size_t clb_outputs_per_side = 2;
     const size_t io_per_iob = 2;
+    const double lut_delay = 2.3 + 19.0;
+    const double dff_setup = 1.5;
+    const double dff_hold = 0.5;
+    const double dff_clk_to_q = 2.5;
 
     mesh_t mesh;
     wire_mesh_t wire_mesh;
 
-    Mesh(Context *ctx, ViaductHelpers *h, size_t clbs_x, size_t clbs_y, size_t channel_width);
+    void init(Context *ctx, ViaductHelpers *h, size_t clbs_x, size_t clbs_y, size_t channel_width);
     void build();
+    void update_timing();
 private:
     Context *ctx;
     ViaductHelpers *h;
@@ -71,6 +76,9 @@ private:
 
     size_t build_clb_bels(size_t x, size_t y);
     size_t build_iob_bels(size_t x, size_t y);
+
+    void update_lut_timing(const CellInfo *ci);
+    void update_dff_timing(const CellInfo *ci);
 };
 
 // Build a mesh of tiles
