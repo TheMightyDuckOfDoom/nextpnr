@@ -31,22 +31,28 @@ typedef std::vector<std::vector<wire_map_t>> wire_mesh_t;
 
 struct Mesh {
     // Config
-    size_t dimX;
-    size_t dimY;
-    size_t clbs_x;
-    size_t clbs_y;
-    size_t channel_width;
-    const size_t lut_inputs = 4;
-    const size_t slice_inputs = lut_inputs + 1;
-    const size_t slice_outputs = 2;
-    const size_t slices_per_clb = 4;
-    const size_t clb_inputs_per_side = lut_inputs + 2;
-    const size_t clb_outputs_per_side = 2;
-    const size_t io_per_iob = 2;
-    const double lut_delay = 2.3 + 19.0;
-    const double dff_setup = 1.5;
-    const double dff_hold = 0.5;
-    const double dff_clk_to_q = 2.5;
+    size_t DIM_X;
+    size_t DIM_Y;
+    size_t CLBS_X;
+    size_t CLBS_Y;
+    size_t CHANNEL_WIDTH;
+
+    const size_t LUT_INPUTS = 4;
+    const size_t SLICE_INPUTS = LUT_INPUTS + 1;
+    const size_t SLICE_OUTPUTS = 2;
+    const size_t SLICES_PER_CLB = 4;
+    const size_t CLB_INPUTS_PER_SIDE = LUT_INPUTS + 2;
+    const size_t CLB_OUTPUTS_PER_SIDE = 2;
+    const size_t IO_PER_IOB = 2;
+
+    const double DUMMY_DELAY = 0.05;
+    const double MUX2_DELAY = 2.3;
+    const double MUX8_DELAY = 19.0;
+    const double QCB_INPUT_DELAY = MUX8_DELAY;
+    const double LUT_DELAY = MUX2_DELAY + MUX8_DELAY;
+    const double DFF_SETUP = 1.5;
+    const double DFF_HOLD = 0.5;
+    const double DFF_CLK_TO_Q = 2.5;
 
     mesh_t mesh;
     wire_mesh_t wire_mesh;
@@ -68,14 +74,14 @@ private:
     wire_map_t build_clb_wires(size_t x, size_t y);
     wire_map_t build_iob_wires(size_t x, size_t y);
 
-    size_t build_corner_pips(size_t x, size_t y);
-    size_t build_qsb_pips(size_t x, size_t y);
-    size_t build_qcb_pips(size_t x, size_t y);
-    size_t build_clb_pips(size_t x, size_t y);
-    size_t build_iob_pips(size_t x, size_t y);
+    void build_corner_pips(size_t x, size_t y);
+    void build_qsb_pips(size_t x, size_t y);
+    void build_qcb_pips(size_t x, size_t y);
+    void build_clb_pips(size_t x, size_t y);
+    void build_iob_pips(size_t x, size_t y);
 
-    size_t build_clb_bels(size_t x, size_t y);
-    size_t build_iob_bels(size_t x, size_t y);
+    void build_clb_bels(size_t x, size_t y);
+    void build_iob_bels(size_t x, size_t y);
 
     void update_lut_timing(const CellInfo *ci);
     void update_dff_timing(const CellInfo *ci);

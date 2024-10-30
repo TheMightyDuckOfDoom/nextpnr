@@ -151,7 +151,7 @@ struct PCBFPGAImpl : ViaductAPI
     {
         // Check that all DFFs in the slice are clocked by the same net
         const NetInfo *clk_net = nullptr;
-        for(size_t slice = 0; slice < mesh.slices_per_clb; slice++) {
+        for(size_t slice = 0; slice < mesh.SLICES_PER_CLB; slice++) {
             const CellInfo *dff = ctx->getBoundBelCell(ctx->getBelByLocation(Loc(x, y, slice * 2 + 1)));
 
             if(dff == nullptr) {
