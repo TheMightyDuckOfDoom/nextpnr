@@ -35,15 +35,31 @@ struct Mesh {
     size_t DIM_Y;
     size_t CLBS_X;
     size_t CLBS_Y;
-    size_t CHANNEL_WIDTH;
 
+    // Routing channel width
+    const size_t CHANNEL_WIDTH = 16;
+
+    // Number of inputs to a LUT
     const size_t LUT_INPUTS = 4;
+    // LUT inputs + dedicated DFF D input
     const size_t SLICE_INPUTS = LUT_INPUTS + 1;
+    // LUT F and DFF Q outputs
     const size_t SLICE_OUTPUTS = 2;
+    // Number of slices per CLB
     const size_t SLICES_PER_CLB = 4;
-    const size_t CLB_INPUTS_PER_SIDE = LUT_INPUTS + 2;
-    const size_t CLB_OUTPUTS_PER_SIDE = 2;
+    // One SLICE inputs + CLK
+    const size_t CLB_INPUTS_PER_SIDE = SLICE_INPUTS + 1;
+    // One SLICE outputs
+    const size_t CLB_OUTPUTS_PER_SIDE = SLICE_OUTPUTS;
+    // Number of IOBUFs per IOB tile
     const size_t IO_PER_IOB = 2;
+
+    // If this is true, CLB inputs are only connect to every other channel
+    const bool SPARSE_CLB_INPUT = true;
+    // If this is true, CLB outputs are only connect to every other channel
+    const bool SPARSE_CLB_OUTPUT = false;
+    // Add a pip from the LUT F output to the DFF D input
+    const bool LUT_F_TO_DFF_D = true;
 
     const double DUMMY_DELAY = 0.05;
     const double MUX2_DELAY = 2.3;
@@ -57,7 +73,7 @@ struct Mesh {
     mesh_t mesh;
     wire_mesh_t wire_mesh;
 
-    void init(Context *ctx, ViaductHelpers *h, size_t clbs_x, size_t clbs_y, size_t channel_width);
+    void init(Context *ctx, ViaductHelpers *h, size_t clbs_x, size_t clbs_y);
     void build();
     void update_timing();
 private:

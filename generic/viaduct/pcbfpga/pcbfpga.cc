@@ -43,10 +43,9 @@ struct PCBFPGAImpl : ViaductAPI
         ViaductAPI::init(ctx);
         h.init(ctx);
 
-        const size_t channel_width = 16;
         assert(args_set);
 
-        mesh.init(ctx, &h, clbs_x, clbs_y, channel_width);
+        mesh.init(ctx, &h, clbs_x, clbs_y);
         mesh.build();
     }
 

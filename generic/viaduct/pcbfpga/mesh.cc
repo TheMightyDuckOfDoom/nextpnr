@@ -43,12 +43,11 @@ bool is_qsb(size_t x, size_t y, size_t DIM_X, size_t DIM_Y) {
     return !is_perimeter(x, y, DIM_X, DIM_Y) && (x % 2 == 1) && (y % 2 == 1);
 }
 
-void Mesh::init(Context *ctx, ViaductHelpers *h, size_t CLBS_X, size_t CLBS_Y, size_t CHANNEL_WIDTH) {
+void Mesh::init(Context *ctx, ViaductHelpers *h, size_t CLBS_X, size_t CLBS_Y) {
     this->ctx = ctx;
     this->h = h;
     this->CLBS_X = CLBS_X;
     this->CLBS_Y = CLBS_Y;
-    this->CHANNEL_WIDTH = CHANNEL_WIDTH;
     this->DIM_X = CLBS_X * 2 + 3;
     this->DIM_Y = CLBS_Y * 2 + 3;
 }
@@ -59,7 +58,7 @@ void Mesh::build() {
     build_pips();
     build_bels();
 
-    if(ctx->debug) {
+    if(true) {
         for(auto pip : ctx->getPips()) {
             log_info("Pip %s %s -> %s\n", ctx->getPipName(pip).str(ctx).c_str(), ctx->getWireName(ctx->getPipSrcWire(pip)).str(ctx).c_str(), ctx->getWireName(ctx->getPipDstWire(pip)).str(ctx).c_str());
         }
@@ -313,6 +312,10 @@ void Mesh::build_qcb_pips(size_t x, size_t y) {
         // Inputs
         for(size_t i = 0; i < CLB_INPUTS_PER_SIDE; i++) {
             for(size_t c = 0; c < CHANNEL_WIDTH; c++) {
+                // Alternate between even and odd channels for each input
+                if(SPARSE_CLB_INPUT && (i % 2 == c % 2))
+                    continue;
+
                 auto src = wire_mesh[y][x]["CHANNEL"][c];
                 auto dst = wire_mesh[y - 1][x]["SOUTH_IN"][i];
                 ctx->addPip(h->xy_id(x, y, ctx->idf("QCB_TO_CLB_SOUTH_IN%d_CHANNEL%d", i, c)), id_QCBPIP, src, dst, QCB_INPUT_DELAY, Loc(x, y, 0));
@@ -321,6 +324,9 @@ void Mesh::build_qcb_pips(size_t x, size_t y) {
         // Outputs
         for(size_t i = 0; i < CLB_OUTPUTS_PER_SIDE; i++) {
             for(size_t c = 0; c < CHANNEL_WIDTH; c++) {
+                if(SPARSE_CLB_OUTPUT && (i % 2 == c % 2))
+                    continue;
+
                 auto src = wire_mesh[y - 1][x]["SOUTH_OUT"][i];
                 auto dst = wire_mesh[y][x]["CHANNEL"][c];
                 ctx->addPip(h->xy_id(x, y, ctx->idf("CLB_TO_QCB_SOUTH_OUT%d_CHANNEL%d", i, c)), id_QCBPIP, src, dst, pip_delay, Loc(x, y, 0));
@@ -332,6 +338,9 @@ void Mesh::build_qcb_pips(size_t x, size_t y) {
         // Inputs
         for(size_t i = 0; i < CLB_INPUTS_PER_SIDE; i++) {
             for(size_t c = 0; c < CHANNEL_WIDTH; c++) {
+                if(SPARSE_CLB_INPUT && (i % 2 != c % 2))
+                    continue;
+
                 auto src = wire_mesh[y][x]["CHANNEL"][c];
                 auto dst = wire_mesh[y + 1][x]["NORTH_IN"][i];
                 ctx->addPip(h->xy_id(x, y, ctx->idf("QCB_TO_CLB_NORTH_IN%d_CHANNEL%d", i, c)), id_QCBPIP, src, dst, QCB_INPUT_DELAY, Loc(x, y, 0));
@@ -340,6 +349,9 @@ void Mesh::build_qcb_pips(size_t x, size_t y) {
         // Outputs
         for(size_t i = 0; i < CLB_OUTPUTS_PER_SIDE; i++) {
             for(size_t c = 0; c < CHANNEL_WIDTH; c++) {
+                if(SPARSE_CLB_OUTPUT && (i % 2 != c % 2))
+                    continue;
+
                 auto src = wire_mesh[y + 1][x]["NORTH_OUT"][i];
                 auto dst = wire_mesh[y][x]["CHANNEL"][c];
                 ctx->addPip(h->xy_id(x, y, ctx->idf("CLB_TO_QCB_NORTH_OUT%d_CHANNEL%d", i, c)), id_QCBPIP, src, dst, pip_delay, Loc(x, y, 0));
@@ -351,6 +363,9 @@ void Mesh::build_qcb_pips(size_t x, size_t y) {
         // Inputs
         for(size_t i = 0; i < CLB_INPUTS_PER_SIDE; i++) {
             for(size_t c = 0; c < CHANNEL_WIDTH; c++) {
+                if(SPARSE_CLB_INPUT && (i % 2 != c % 2))
+                    continue;
+
                 auto src = wire_mesh[y][x]["CHANNEL"][c];
                 auto dst = wire_mesh[y][x - 1]["EAST_IN"][i];
                 ctx->addPip(h->xy_id(x, y, ctx->idf("QCB_TO_CLB_EAST_IN%d_CHANNEL%d", i, c)), id_QCBPIP, src, dst, QCB_INPUT_DELAY, Loc(x, y, 0));
@@ -359,6 +374,9 @@ void Mesh::build_qcb_pips(size_t x, size_t y) {
         // Outputs
         for(size_t i = 0; i < CLB_OUTPUTS_PER_SIDE; i++) {
             for(size_t c = 0; c < CHANNEL_WIDTH; c++) {
+                if(SPARSE_CLB_OUTPUT && (i % 2 != c % 2))
+                    continue;
+
                 auto src = wire_mesh[y][x - 1]["EAST_OUT"][i];
                 auto dst = wire_mesh[y][x]["CHANNEL"][c];
                 ctx->addPip(h->xy_id(x, y, ctx->idf("CLB_TO_QCB_EAST_OUT%d_CHANNEL%d", i, c)), id_QCBPIP, src, dst, pip_delay, Loc(x, y, 0));
@@ -370,6 +388,9 @@ void Mesh::build_qcb_pips(size_t x, size_t y) {
         // Inputs
         for(size_t i = 0; i < CLB_INPUTS_PER_SIDE; i++) {
             for(size_t c = 0; c < CHANNEL_WIDTH; c++) {
+                if(SPARSE_CLB_INPUT && (i % 2 == c % 2))
+                    continue;
+
                 auto src = wire_mesh[y][x]["CHANNEL"][c];
                 auto dst = wire_mesh[y][x + 1]["WEST_IN"][i];
                 ctx->addPip(h->xy_id(x, y, ctx->idf("QCB_TO_CLB_WEST_IN%d_CHANNEL%d", i, c)), id_QCBPIP, src, dst, QCB_INPUT_DELAY, Loc(x, y, 0));
@@ -378,6 +399,9 @@ void Mesh::build_qcb_pips(size_t x, size_t y) {
         // Outputs
         for(size_t i = 0; i < CLB_OUTPUTS_PER_SIDE; i++) {
             for(size_t c = 0; c < CHANNEL_WIDTH; c++) {
+                if(SPARSE_CLB_OUTPUT && (i % 2 == c % 2))
+                    continue;
+
                 auto src = wire_mesh[y][x + 1]["WEST_OUT"][i];
                 auto dst = wire_mesh[y][x]["CHANNEL"][c];
                 ctx->addPip(h->xy_id(x, y, ctx->idf("CLB_TO_QCB_WEST_OUT%d_CHANNEL%d", i, c)), id_QCBPIP, src, dst, pip_delay, Loc(x, y, 0));
@@ -490,10 +514,12 @@ void Mesh::build_clb_pips(size_t x, size_t y) {
     }
 
     // Connect LUT F to FF D
-    for(size_t slice = 0; slice < SLICES_PER_CLB; slice++) {
-        WireId src = wire_mesh[y][x]["SLICE_OUT"][slice * SLICE_OUTPUTS]; // LUT F
-        WireId dst = wire_mesh[y][x]["SLICE_IN"][slice * SLICE_INPUTS + LUT_INPUTS]; // FF D
-        ctx->addPip(h->xy_id(x, y, ctx->idf("SLICE%d_F_D", slice)), id_CLBPIP, src, dst, MUX2_DELAY, Loc(x, y, 0));
+    if(LUT_F_TO_DFF_D) {
+        for(size_t slice = 0; slice < SLICES_PER_CLB; slice++) {
+            WireId src = wire_mesh[y][x]["SLICE_OUT"][slice * SLICE_OUTPUTS]; // LUT F
+            WireId dst = wire_mesh[y][x]["SLICE_IN"][slice * SLICE_INPUTS + LUT_INPUTS]; // FF D
+            ctx->addPip(h->xy_id(x, y, ctx->idf("SLICE%d_F_D", slice)), id_CLBPIP, src, dst, MUX2_DELAY, Loc(x, y, 0));
+        }
     }
 
     // Connect slice outputs
@@ -556,12 +582,16 @@ void Mesh::build_pips() {
     expected_pips += (CLBS_X - 1 + CLBS_Y - 1) * 2 * (2 * CHANNEL_WIDTH * 3);
     // QSB core pips - to 4 other QCBs
     expected_pips += ((CLBS_X - 1) * (CLBS_Y - 1)) * (2 * CHANNEL_WIDTH * 6);
-    // CLB input and output pips
-    expected_pips += CLBS_X * CLBS_Y * (CLB_INPUTS_PER_SIDE + CLB_OUTPUTS_PER_SIDE) * CHANNEL_WIDTH * 4;
+    // CLB input pips
+    if(SPARSE_CLB_INPUT) expected_pips += CLBS_X * CLBS_Y * CLB_INPUTS_PER_SIDE * CHANNEL_WIDTH / 2 * 4;
+    else expected_pips += CLBS_X * CLBS_Y * CLB_INPUTS_PER_SIDE * CHANNEL_WIDTH * 4;
+    // CLB output pips
+    if(SPARSE_CLB_OUTPUT) expected_pips += CLBS_X * CLBS_Y * CLB_OUTPUTS_PER_SIDE * CHANNEL_WIDTH / 2 * 4;
+    else expected_pips += CLBS_X * CLBS_Y * CLB_OUTPUTS_PER_SIDE * CHANNEL_WIDTH * 4;
     // CLB control signals
     expected_pips += CLBS_X * CLBS_Y * 4;
     // CLB slice internal pips (LUT -> FF)
-    expected_pips += CLBS_X * CLBS_Y * SLICES_PER_CLB;
+    if(LUT_F_TO_DFF_D) expected_pips += CLBS_X * CLBS_Y * SLICES_PER_CLB;
     // CLB slice input pips
     expected_pips += CLBS_X * CLBS_Y * SLICES_PER_CLB * SLICE_INPUTS * 4;
     // CLB slice output pips
