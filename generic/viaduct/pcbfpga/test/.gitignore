@@ -1,1 +1,2 @@
-*_synth.v
+out/*.v
+out/*.json

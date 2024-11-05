@@ -32,6 +32,36 @@ module DFF #(
 	end
 endmodule
 
+module BRAM #(
+	parameter DUAL_PORT = 0,
+) (
+	input  CLK, WE,
+	input  [8:0] RWADDR, RADDR,
+	input  [3:0] DIN,
+	output [3:0] DOUT
+);
+	if(DUAL_PORT) begin
+		reg [3:0] mem [0:2**7-1];
+
+		always @(posedge CLK) begin
+			if(WE) mem[RWADDR] <= DIN;
+		end
+
+		assign DOUT = mem[RADDR];
+	end else begin
+		reg [3:0] mem [0:2**14-1];
+		wire [13:0] addr;
+
+		assign addr = {RADDR, RWADDR};
+
+		always @(posedge CLK) begin
+			if(WE) mem[addr] <= DIN;
+		end
+
+		assign DOUT = mem[addr];
+	end
+endmodule
+
 module IOB #(
 	parameter INPUT_USED = 1'b0,
 	parameter OUTPUT_USED = 1'b0,

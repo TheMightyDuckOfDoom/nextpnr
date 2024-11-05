@@ -5,7 +5,46 @@ module \$lut (A, Y);
 	output Y;
 
 	LUT #(.K(WIDTH), .INIT(LUT)) _TECHMAP_REPLACE_ (.I(A), .F(Y));
+endmodule
 
+module \$__SPRAM8K_ (
+	input  PORT_RW_CLK,
+	input  PORT_RW_WR_EN,
+	input  [12:0] PORT_RW_ADDR,
+	input  [3:0] PORT_RW_WR_DATA,
+	output [3:0] PORT_RW_RD_DATA
+);
+	BRAM #(
+		.DUAL_PORT(1'b0)
+	) _TECHMAP_REPLACE_ (
+		.CLK(PORT_RW_CLK),
+		.WE(PORT_RW_WR_EN),
+		.RWADDR(PORT_RW_ADDR[8:0]),
+		.RADDR({5'd0, PORT_RW_ADDR[12:9]}),
+		.DIN(PORT_RW_WR_DATA),
+		.DOUT(PORT_RW_RD_DATA)
+	);
+endmodule
+
+module \$__DPRAM512_ (
+	input  [8:0] PORT_R_ADDR,
+	output [3:0] PORT_R_RD_DATA,
+
+	input  PORT_W_CLK,
+	input  PORT_W_WR_EN,
+	input  [8:0] PORT_W_ADDR,
+	input  [3:0] PORT_W_WR_DATA
+);
+	BRAM #(
+		.DUAL_PORT(1'b1)
+	) _TECHMAP_REPLACE_ (
+		.CLK(PORT_W_CLK),
+		.WE(PORT_W_WR_EN),
+		.RWADDR(PORT_W_ADDR),
+		.RADDR(PORT_R_ADDR),
+		.DIN(PORT_W_WR_DATA),
+		.DOUT(PORT_R_RD_DATA)
+	);
 endmodule
 
 module \$_DFF_P_ (input D, C, output Q); DFF #(.ENABLE_USED(1'b0), .RST_USED(1'b0)) _TECHMAP_REPLACE_ (.D(D), .Q(Q), .CLK(C)); endmodule

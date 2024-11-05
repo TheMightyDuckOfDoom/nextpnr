@@ -1,0 +1,26 @@
+# 8k x 4 bit single port ram, asynchronous read
+ram block $__SPRAM8K_ {
+    abits 13;
+    width 4;
+    cost 1;
+    init none;
+    
+    port arsw "RW" {
+        clock posedge;
+    }
+}
+
+# 512 x 4 bit dual port ram, asynchronous read
+ram block $__DPRAM512_ {
+    abits 9;
+    width 4;
+    cost 1;
+    init none;
+
+    port sw "W" {
+        clock posedge;
+    }
+
+    port ar "R" {
+    }
+}
