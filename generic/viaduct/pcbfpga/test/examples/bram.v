@@ -1,7 +1,7 @@
 module ram #(
-    parameter DATA_WIDTH = 4,
-    parameter ADDR_WIDTH = 14,
-    parameter DUAL_PORT  = 0,
+    parameter DATA_WIDTH = 5,
+    parameter ADDR_WIDTH = 10,
+    parameter DUAL_PORT  = 1,
     parameter SYNC_READ  = 1
 )(
     input  CLK, WE,

@@ -45,13 +45,14 @@ struct PCBFPGAImpl : ViaductAPI
 
         assert(args_set);
 
-        mesh.init(ctx, &h, clbs_x, clbs_y, print_pips);
+        mesh.init(ctx, &h, clbs_x, clbs_y, print_pips, has_brams);
         mesh.build();
     }
 
     void setArgs(const dict<std::string, std::string> &args) {
         bool clbs_set = false;
         bool cluster_dffs_set = false;
+        bool has_brams_set = false;
         for(auto arg : args) {
             //log_info("PCBFPGAImpl: %s = %s\n", arg.first.c_str(), arg.second.c_str());
             if(arg.first == "clbs") {
@@ -89,6 +90,21 @@ struct PCBFPGAImpl : ViaductAPI
                 } else {
                     log_error("PCBFPGAImpl: print_pips argument should be true or false\n");
                 }
+            } else if (arg.first == "brams") {
+                auto cfg = arg.second;
+                if(cfg == "true") {
+                    has_brams = true;
+                    has_brams_set = true;
+                    log_info("PCBFPGAImpl: has_brams = true\n");
+                } else if(cfg == "false") {
+                    has_brams = false;
+                    has_brams_set = true;
+                    log_info("PCBFPGAImpl: has_brams = false\n");
+                } else {
+                    log_error("PCBFPGAImpl: brams argument should be true or false\n");
+                }
+            } else {
+                log_error("PCBFPGAImpl: Unknown argument %s\n", arg.first.c_str());
             }
         }
 
@@ -99,6 +115,10 @@ struct PCBFPGAImpl : ViaductAPI
         if(!cluster_dffs_set) {
             log_info("PCBFPGAImpl: cluster_dffs not set, using default %s\n", cluster_dffs ? "true" : "false");
         }
+
+        if(!has_brams_set) {
+            log_info("PCBFPGAImpl: has_brams not set, using default %s\n", has_brams ? "true" : "false");
+        } 
 
         args_set = true;
     }
@@ -350,6 +370,7 @@ struct PCBFPGAImpl : ViaductAPI
     size_t clbs_y = clbs_x;
     bool cluster_dffs = true;
     bool print_pips = false;
+    bool has_brams = false;
 
     typedef struct {
         const NetInfo *dff_clk = nullptr;

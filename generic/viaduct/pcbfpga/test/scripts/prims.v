@@ -36,29 +36,29 @@ module BRAM #(
 	parameter DUAL_PORT = 0,
 ) (
 	input  CLK, WE,
-	input  [8:0] RWADDR, RADDR,
-	input  [3:0] DIN,
-	output [3:0] DOUT
+	input  [8:0] RW_ADDR, R_ADDR,
+	input  [3:0] W_DATA,
+	output [3:0] R_DATA
 );
 	if(DUAL_PORT) begin
 		reg [3:0] mem [0:2**7-1];
 
 		always @(posedge CLK) begin
-			if(WE) mem[RWADDR] <= DIN;
+			if(WE) mem[R_WADDR] <= W_DATA;
 		end
 
-		assign DOUT = mem[RADDR];
+		assign R_DATA = mem[R_ADDR];
 	end else begin
 		reg [3:0] mem [0:2**14-1];
 		wire [13:0] addr;
 
-		assign addr = {RADDR, RWADDR};
+		assign addr = {R_ADDR[3:0], R_WADDR};
 
 		always @(posedge CLK) begin
-			if(WE) mem[addr] <= DIN;
+			if(WE) mem[addr] <= W_DATA;
 		end
 
-		assign DOUT = mem[addr];
+		assign R_DATA = mem[addr];
 	end
 endmodule
 

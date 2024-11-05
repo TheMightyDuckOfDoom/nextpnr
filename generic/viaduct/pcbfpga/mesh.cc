@@ -14,6 +14,7 @@ const char* tile_type_to_string(tile_type_t type) {
         case TILE_QSB: return "qsb";
         case TILE_QCB: return "qcb";
         case TILE_COR: return "cor";
+        case TILE_RAM: return "RAM";
     }
     return "UKN";
 }
@@ -43,7 +44,7 @@ bool is_qsb(size_t x, size_t y, size_t DIM_X, size_t DIM_Y) {
     return !is_perimeter(x, y, DIM_X, DIM_Y) && (x % 2 == 1) && (y % 2 == 1);
 }
 
-void Mesh::init(Context *ctx, ViaductHelpers *h, size_t CLBS_X, size_t CLBS_Y, bool print_pips) {
+void Mesh::init(Context *ctx, ViaductHelpers *h, size_t CLBS_X, size_t CLBS_Y, bool print_pips, bool has_brams) {
     this->ctx = ctx;
     this->h = h;
     this->CLBS_X = CLBS_X;
@@ -51,6 +52,7 @@ void Mesh::init(Context *ctx, ViaductHelpers *h, size_t CLBS_X, size_t CLBS_Y, b
     this->DIM_X = CLBS_X * 2 + 3;
     this->DIM_Y = CLBS_Y * 2 + 3;
     this->print_pips = print_pips;
+    this->has_brams = has_brams;
 }
 
 void Mesh::build() {
@@ -105,15 +107,21 @@ void Mesh::print() {
 void Mesh::build_mesh() {
     mesh.resize(DIM_Y, std::vector<tile_type_t>(DIM_X, TILE_NONE));
 
-    size_t count[6] = {0, 0, 0, 0, 0, 0};
+    size_t count[7] = {0, 0, 0, 0, 0, 0, 0};
 
+    NUM_RAM = 0;
     for(size_t y = 0; y < DIM_Y; y++) {
         for(size_t x = 0; x < DIM_X; x++) {
             if(is_io(x, y, DIM_X, DIM_Y))
                 mesh[y][x] = TILE_IOB;
-            else if(is_clb(x, y, DIM_X, DIM_Y))
-                mesh[y][x] = TILE_CLB;
-            else if(is_secondary_corner(x, y, DIM_X, DIM_Y))
+            else if(is_clb(x, y, DIM_X, DIM_Y)) {
+                if(has_brams && (x == (DIM_X / 2 - 1))) {
+                    log_info("RAM at %ld %ld\n", x, y);
+                    mesh[y][x] = TILE_RAM;
+                    NUM_RAM++;
+                } else
+                    mesh[y][x] = TILE_CLB;
+            } else if(is_secondary_corner(x, y, DIM_X, DIM_Y))
                 mesh[y][x] = TILE_COR;
             else if(is_qsb(x, y, DIM_X, DIM_Y))
                 mesh[y][x] = TILE_QSB;
@@ -208,6 +216,50 @@ wire_map_t Mesh::build_iob_wires(size_t x, size_t y) {
     return wire_map;
 }
 
+wire_map_t Mesh::build_ram_wires(size_t x, size_t y) {
+    assert(mesh[y][x] == TILE_RAM);
+    wire_map_t wire_map;
+
+    // Input wires
+    const char* inp_dirs[] = {"NORTH_IN", "EAST_IN", "SOUTH_IN", "WEST_IN"};
+    for(auto dir : inp_dirs) {
+        std::vector<WireId> wires(CLB_INPUTS_PER_SIDE);
+        assert(CLB_INPUTS_PER_SIDE >= 6);
+        for(size_t i = 0; i < CLB_INPUTS_PER_SIDE; i++) {
+            wires[i] = ctx->addWire(h->xy_id(x, y, ctx->idf("%s%d", dir, i)), ctx->id(dir), x, y);
+        }
+        wire_map[dir] = wires;
+    }
+    
+    // Output wires
+    const char* out_dirs[] = {"NORTH_OUT", "EAST_OUT", "SOUTH_OUT", "WEST_OUT"};
+    for(auto dir : out_dirs) {
+        std::vector<WireId> wires(1);
+        assert(CLB_OUTPUTS_PER_SIDE >= 1);
+        wires[0] = ctx->addWire(h->xy_id(x, y, ctx->idf("%s0", dir)), ctx->id(dir), x, y);
+        wire_map[dir] = wires;
+    }
+
+    // Internal wires
+    wire_map["CLK"] = std::vector<WireId>(1, ctx->addWire(h->xy_id(x, y, ctx->idf("CLK")), ctx->id("RAM_INPUT"), x, y));
+    wire_map["RW_ADDR"] = std::vector<WireId>(9);
+    wire_map["R_ADDR"] = std::vector<WireId>(9);
+    for(size_t i = 0; i < 9; i++) {
+        wire_map["RW_ADDR"][i] = ctx->addWire(h->xy_id(x, y, ctx->idf("RW_ADDR%d", i)), ctx->id("RAM_INPUT"), x, y);
+        wire_map["R_ADDR"][i] = ctx->addWire(h->xy_id(x, y, ctx->idf("R_ADDR%d", i)), ctx->id("RAM_INPUT"), x, y);
+    }
+    wire_map["WE"] = std::vector<WireId>(1, ctx->addWire(h->xy_id(x, y, ctx->idf("RW_WE")), ctx->id("RAM_INPUT"), x, y));
+
+    wire_map["W_DATA"] = std::vector<WireId>(4);
+    wire_map["R_DATA"] = std::vector<WireId>(4);
+    for(size_t i = 0; i < 4; i++) {
+        wire_map["W_DATA"][i] = ctx->addWire(h->xy_id(x, y, ctx->idf("W_DATA%d", i)), ctx->id("RAM_INPUT"), x, y);
+        wire_map["R_DATA"][i] = ctx->addWire(h->xy_id(x, y, ctx->idf("R_DATA%d", i)), ctx->id("RAM_OUTPUT"), x, y);
+    }
+
+    return wire_map;
+}
+
 void Mesh::build_wires() {
     wire_mesh.resize(DIM_Y, std::vector<wire_map_t>(DIM_X));
 
@@ -223,7 +275,16 @@ void Mesh::build_wires() {
                 case TILE_IOB:
                     wire_mesh[y][x] = build_iob_wires(x, y);
                     break;
+                case TILE_RAM:
+                    wire_mesh[y][x] = build_ram_wires(x, y);
+                    break;
+                case TILE_COR:
+                case TILE_QSB:
+                case TILE_NONE:
+                    break;
                 default:
+                    log_error("Invalid tile type %d at (%ld, %ld)\n", mesh[y][x], x, y);
+                    assert(false);
                     break;
             }
         }
@@ -324,105 +385,117 @@ void Mesh::build_qcb_pips(size_t x, size_t y) {
 
     const double pip_delay = DUMMY_DELAY;
 
-    // Connect to the CLB above
-    if(mesh[y - 1][x] == TILE_CLB) {
+    // Connect to the CLB, RAM above
+    if(mesh[y - 1][x] == TILE_CLB || mesh[y - 1][x] == TILE_RAM) {
         // Inputs
         for(size_t i = 0; i < CLB_INPUTS_PER_SIDE; i++) {
             for(size_t c = 0; c < CHANNEL_WIDTH; c++) {
                 // Alternate between even and odd channels for each input
-                if(SPARSE_CLB_INPUT && (i % 2 == c % 2))
+                if(SPARSE_INPUT && (i % 2 == c % 2))
                     continue;
 
                 auto src = wire_mesh[y][x]["CHANNEL"][c];
                 auto dst = wire_mesh[y - 1][x]["SOUTH_IN"][i];
-                ctx->addPip(h->xy_id(x, y, ctx->idf("QCB_TO_CLB_SOUTH_IN%d_CHANNEL%d", i, c)), id_QCBPIP, src, dst, QCB_INPUT_DELAY, Loc(x, y, 0));
+                ctx->addPip(h->xy_id(x, y, ctx->idf("TILE_TO_CLB_SOUTH_IN%d_CHANNEL%d", i, c)), id_QCBPIP, src, dst, QCB_INPUT_DELAY, Loc(x, y, 0));
             }
         }
         // Outputs
         for(size_t i = 0; i < CLB_OUTPUTS_PER_SIDE; i++) {
             for(size_t c = 0; c < CHANNEL_WIDTH; c++) {
-                if(SPARSE_CLB_OUTPUT && (i % 2 == c % 2))
+                if(SPARSE_OUTPUT && (i % 2 == c % 2))
                     continue;
 
                 auto src = wire_mesh[y - 1][x]["SOUTH_OUT"][i];
                 auto dst = wire_mesh[y][x]["CHANNEL"][c];
-                ctx->addPip(h->xy_id(x, y, ctx->idf("CLB_TO_QCB_SOUTH_OUT%d_CHANNEL%d", i, c)), id_QCBPIP, src, dst, pip_delay, Loc(x, y, 0));
+                ctx->addPip(h->xy_id(x, y, ctx->idf("TILE_TO_QCB_SOUTH_OUT%d_CHANNEL%d", i, c)), id_QCBPIP, src, dst, pip_delay, Loc(x, y, 0));
             }
+            // RAMs only have one output
+            if(mesh[y - 1][x] == TILE_RAM)
+                break;
         }
     }
-    // Connect to the CLB below
-    if(mesh[y + 1][x] == TILE_CLB) {
+    // Connect to the CLB, RAM below
+    if(mesh[y + 1][x] == TILE_CLB || mesh[y + 1][x] == TILE_RAM) {
         // Inputs
         for(size_t i = 0; i < CLB_INPUTS_PER_SIDE; i++) {
             for(size_t c = 0; c < CHANNEL_WIDTH; c++) {
-                if(SPARSE_CLB_INPUT && (i % 2 != c % 2))
+                if(SPARSE_INPUT && (i % 2 != c % 2))
                     continue;
 
                 auto src = wire_mesh[y][x]["CHANNEL"][c];
                 auto dst = wire_mesh[y + 1][x]["NORTH_IN"][i];
-                ctx->addPip(h->xy_id(x, y, ctx->idf("QCB_TO_CLB_NORTH_IN%d_CHANNEL%d", i, c)), id_QCBPIP, src, dst, QCB_INPUT_DELAY, Loc(x, y, 0));
+                ctx->addPip(h->xy_id(x, y, ctx->idf("TILE_TO_CLB_NORTH_IN%d_CHANNEL%d", i, c)), id_QCBPIP, src, dst, QCB_INPUT_DELAY, Loc(x, y, 0));
             }
         }
         // Outputs
         for(size_t i = 0; i < CLB_OUTPUTS_PER_SIDE; i++) {
             for(size_t c = 0; c < CHANNEL_WIDTH; c++) {
-                if(SPARSE_CLB_OUTPUT && (i % 2 != c % 2))
+                if(SPARSE_OUTPUT && (i % 2 != c % 2))
                     continue;
 
                 auto src = wire_mesh[y + 1][x]["NORTH_OUT"][i];
                 auto dst = wire_mesh[y][x]["CHANNEL"][c];
-                ctx->addPip(h->xy_id(x, y, ctx->idf("CLB_TO_QCB_NORTH_OUT%d_CHANNEL%d", i, c)), id_QCBPIP, src, dst, pip_delay, Loc(x, y, 0));
+                ctx->addPip(h->xy_id(x, y, ctx->idf("TILE_TO_QCB_NORTH_OUT%d_CHANNEL%d", i, c)), id_QCBPIP, src, dst, pip_delay, Loc(x, y, 0));
             }
+            // RAMs only have one output
+            if(mesh[y + 1][x] == TILE_RAM)
+                break;
         }
     }
-    // Connect to the CLB on the left
-    if(mesh[y][x - 1] == TILE_CLB) {
+    // Connect to the CLB, RAM on the left
+    if(mesh[y][x - 1] == TILE_CLB || mesh[y][x - 1] == TILE_RAM) {
         // Inputs
         for(size_t i = 0; i < CLB_INPUTS_PER_SIDE; i++) {
             for(size_t c = 0; c < CHANNEL_WIDTH; c++) {
-                if(SPARSE_CLB_INPUT && (i % 2 != c % 2))
+                if(SPARSE_INPUT && (i % 2 != c % 2))
                     continue;
 
                 auto src = wire_mesh[y][x]["CHANNEL"][c];
                 auto dst = wire_mesh[y][x - 1]["EAST_IN"][i];
-                ctx->addPip(h->xy_id(x, y, ctx->idf("QCB_TO_CLB_EAST_IN%d_CHANNEL%d", i, c)), id_QCBPIP, src, dst, QCB_INPUT_DELAY, Loc(x, y, 0));
+                ctx->addPip(h->xy_id(x, y, ctx->idf("TILE_TO_CLB_EAST_IN%d_CHANNEL%d", i, c)), id_QCBPIP, src, dst, QCB_INPUT_DELAY, Loc(x, y, 0));
             }
         }
         // Outputs
         for(size_t i = 0; i < CLB_OUTPUTS_PER_SIDE; i++) {
             for(size_t c = 0; c < CHANNEL_WIDTH; c++) {
-                if(SPARSE_CLB_OUTPUT && (i % 2 != c % 2))
+                if(SPARSE_OUTPUT && (i % 2 != c % 2))
                     continue;
 
                 auto src = wire_mesh[y][x - 1]["EAST_OUT"][i];
                 auto dst = wire_mesh[y][x]["CHANNEL"][c];
-                ctx->addPip(h->xy_id(x, y, ctx->idf("CLB_TO_QCB_EAST_OUT%d_CHANNEL%d", i, c)), id_QCBPIP, src, dst, pip_delay, Loc(x, y, 0));
+                ctx->addPip(h->xy_id(x, y, ctx->idf("TILE_TO_QCB_EAST_OUT%d_CHANNEL%d", i, c)), id_QCBPIP, src, dst, pip_delay, Loc(x, y, 0));
             }
+            // RAMs only have one output
+            if(mesh[y][x - 1] == TILE_RAM)
+                break;
         }
     }
-    // Connect to the CLB on the right
-    if(mesh[y][x + 1] == TILE_CLB) {
+    // Connect to the CLB, RAM on the right
+    if(mesh[y][x + 1] == TILE_CLB || mesh[y][x + 1] == TILE_RAM) {
         // Inputs
         for(size_t i = 0; i < CLB_INPUTS_PER_SIDE; i++) {
             for(size_t c = 0; c < CHANNEL_WIDTH; c++) {
-                if(SPARSE_CLB_INPUT && (i % 2 == c % 2))
+                if(SPARSE_INPUT && (i % 2 == c % 2))
                     continue;
 
                 auto src = wire_mesh[y][x]["CHANNEL"][c];
                 auto dst = wire_mesh[y][x + 1]["WEST_IN"][i];
-                ctx->addPip(h->xy_id(x, y, ctx->idf("QCB_TO_CLB_WEST_IN%d_CHANNEL%d", i, c)), id_QCBPIP, src, dst, QCB_INPUT_DELAY, Loc(x, y, 0));
+                ctx->addPip(h->xy_id(x, y, ctx->idf("TILE_TO_CLB_WEST_IN%d_CHANNEL%d", i, c)), id_QCBPIP, src, dst, QCB_INPUT_DELAY, Loc(x, y, 0));
             }
         }
         // Outputs
         for(size_t i = 0; i < CLB_OUTPUTS_PER_SIDE; i++) {
             for(size_t c = 0; c < CHANNEL_WIDTH; c++) {
-                if(SPARSE_CLB_OUTPUT && (i % 2 == c % 2))
+                if(SPARSE_OUTPUT && (i % 2 == c % 2))
                     continue;
 
                 auto src = wire_mesh[y][x + 1]["WEST_OUT"][i];
                 auto dst = wire_mesh[y][x]["CHANNEL"][c];
-                ctx->addPip(h->xy_id(x, y, ctx->idf("CLB_TO_QCB_WEST_OUT%d_CHANNEL%d", i, c)), id_QCBPIP, src, dst, pip_delay, Loc(x, y, 0));
+                ctx->addPip(h->xy_id(x, y, ctx->idf("TILE_TO_QCB_WEST_OUT%d_CHANNEL%d", i, c)), id_QCBPIP, src, dst, pip_delay, Loc(x, y, 0));
             }
+            // RAMs only have one output
+            if(mesh[y][x + 1] == TILE_RAM)
+                break;
         }
     }
 
@@ -588,6 +661,69 @@ void Mesh::build_iob_pips(size_t x, size_t y) {
     assert(mesh[y][x] == TILE_IOB);
 }
 
+void Mesh::build_ram_pips(size_t x, size_t y) {
+    assert(mesh[y][x] == TILE_RAM);
+
+    // Dummy pips
+    // Fixed mapping
+
+    // Inputs
+    const char* in_dirs[] = {"NORTH_IN", "EAST_IN", "SOUTH_IN", "WEST_IN"};
+    
+    // W_DATA NORTH[0,1,2,3]
+    for(size_t in = 0; in < 4; in++) {
+        WireId src = wire_mesh[y][x][in_dirs[0]][in];
+        WireId dst = wire_mesh[y][x]["W_DATA"][in];
+        ctx->addPip(h->xy_id(x, y, ctx->idf("RAM_W_DATA%d_%s%d", in, in_dirs[0], in)), id_RAMPIP, src, dst, DUMMY_DELAY, Loc(x, y, 0));
+    }
+
+    // WE NORTH[4]
+    WireId src = wire_mesh[y][x][in_dirs[0]][4];
+    WireId dst = wire_mesh[y][x]["WE"][0];
+    ctx->addPip(h->xy_id(x, y, ctx->idf("RAM_WE_%s%d", in_dirs[0], 4)), id_RAMPIP, src, dst, DUMMY_DELAY, Loc(x, y, 0));
+
+    // CLK NORTH[5]
+    src = wire_mesh[y][x][in_dirs[0]][5];
+    dst = wire_mesh[y][x]["CLK"][0];
+    ctx->addPip(h->xy_id(x, y, ctx->idf("RAM_CLK_%s%d", in_dirs[0], 5)), id_RAMPIP, src, dst, DUMMY_DELAY, Loc(x, y, 0));
+
+    // RW_ADDR[0,1,2,3,4,5] EAST[0,1,2,3,4,5]
+    for(size_t in = 0; in < 6; in++) {
+        src = wire_mesh[y][x][in_dirs[1]][in];
+        dst = wire_mesh[y][x]["RW_ADDR"][in];
+        ctx->addPip(h->xy_id(x, y, ctx->idf("RAM_RW_ADDR%d_%s%d", in, in_dirs[1], in)), id_RAMPIP, src, dst, DUMMY_DELAY, Loc(x, y, 0));
+    }
+
+    // RW_ADDR[6,7,8] SOUTH[0,1,2]
+    for(size_t in = 6; in < 9; in++) {
+        src = wire_mesh[y][x][in_dirs[2]][in - 6];
+        dst = wire_mesh[y][x]["RW_ADDR"][in];
+        ctx->addPip(h->xy_id(x, y, ctx->idf("RAM_RW_ADDR%d_%s%d", in, in_dirs[2], in - 6)), id_RAMPIP, src, dst, DUMMY_DELAY, Loc(x, y, 0));
+    }
+
+    // R_ADDR[0,1,2] SOUTH[3,4,5]
+    for(size_t in = 0; in < 3; in++) {
+        src = wire_mesh[y][x][in_dirs[2]][in + 3];
+        dst = wire_mesh[y][x]["R_ADDR"][in];
+        ctx->addPip(h->xy_id(x, y, ctx->idf("RAM_R_ADDR%d_%s%d", in, in_dirs[2], in + 3)), id_RAMPIP, src, dst, DUMMY_DELAY, Loc(x, y, 0));
+    }
+
+    // R_ADDR[3,4,5,6,7,8] WEST[0,1,2,3,4,5]
+    for(size_t in = 3; in < 9; in++) {
+        src = wire_mesh[y][x][in_dirs[3]][in - 3];
+        dst = wire_mesh[y][x]["R_ADDR"][in];
+        ctx->addPip(h->xy_id(x, y, ctx->idf("RAM_R_ADDR%d_%s%d", in, in_dirs[3], in - 3)), id_RAMPIP, src, dst, DUMMY_DELAY, Loc(x, y, 0));
+    }
+
+    // One output to each direction
+    const char* out_dirs[] = {"NORTH_OUT", "EAST_OUT", "SOUTH_OUT", "WEST_OUT"};
+    for(size_t out = 0; out < 4; out++) {
+        WireId src = wire_mesh[y][x]["R_DATA"][out];
+        WireId dst = wire_mesh[y][x][out_dirs[out]][0];
+        ctx->addPip(h->xy_id(x, y, ctx->idf("RAM_R_DATA%d_%s0", out, out_dirs[out])), id_RAMPIP, src, dst, DUMMY_DELAY, Loc(x, y, 0));
+    }
+}
+
 void Mesh::build_pips() {
     for(size_t y = 0; y < DIM_Y; y++) {
         for(size_t x = 0; x < DIM_X; x++) {
@@ -607,8 +743,11 @@ void Mesh::build_pips() {
                 case TILE_IOB:
                     build_iob_pips(x, y);
                     break;
-                default:
+                case TILE_RAM:
+                    build_ram_pips(x, y);
                     break;
+                default:
+                    break; 
             }
         }
     }
@@ -622,28 +761,37 @@ void Mesh::build_pips() {
     expected_pips += 4 * 2 * CHANNEL_WIDTH;
 
     // Check "real" pips
-    // QCB perimiter pips - to 1 other IOB
+    // QSB perimiter pips - to 1 other IOB
     expected_pips += (CLBS_X + CLBS_Y) * 2 * CHANNEL_WIDTH * (IO_PER_IOB * 3);
     // QSB perimiter pips - to 3 other QCBs
     expected_pips += (CLBS_X - 1 + CLBS_Y - 1) * 2 * (2 * CHANNEL_WIDTH * 3);
     // QSB core pips - to 4 other QCBs
     expected_pips += ((CLBS_X - 1) * (CLBS_Y - 1)) * (2 * CHANNEL_WIDTH * 6);
     // CLB input pips
-    if(SPARSE_CLB_INPUT) expected_pips += CLBS_X * CLBS_Y * CLB_INPUTS_PER_SIDE * CHANNEL_WIDTH / 2 * 4;
-    else expected_pips += CLBS_X * CLBS_Y * CLB_INPUTS_PER_SIDE * CHANNEL_WIDTH * 4;
+    const size_t CLBS = CLBS_X * CLBS_Y - NUM_RAM;
+    if(SPARSE_INPUT) expected_pips += CLBS * CLB_INPUTS_PER_SIDE * CHANNEL_WIDTH / 2 * 4;
+    else expected_pips += CLBS * CLB_INPUTS_PER_SIDE * CHANNEL_WIDTH * 4;
     // CLB output pips
-    if(SPARSE_CLB_OUTPUT) expected_pips += CLBS_X * CLBS_Y * CLB_OUTPUTS_PER_SIDE * CHANNEL_WIDTH / 2 * 4;
-    else expected_pips += CLBS_X * CLBS_Y * CLB_OUTPUTS_PER_SIDE * CHANNEL_WIDTH * 4;
+    if(SPARSE_OUTPUT) expected_pips += CLBS * CLB_OUTPUTS_PER_SIDE * CHANNEL_WIDTH / 2 * 4;
+    else expected_pips += CLBS * CLB_OUTPUTS_PER_SIDE * CHANNEL_WIDTH * 4;
     // CLB control signals: CLK, EN, RST_N
-    expected_pips += CLBS_X * CLBS_Y * 4 * 3;
+    expected_pips += CLBS * 4 * 3;
     // CLB slice internal pips (LUT -> FF)
-    if(LUT_F_TO_DFF_D) expected_pips += CLBS_X * CLBS_Y * SLICES_PER_CLB;
+    if(LUT_F_TO_DFF_D) expected_pips += CLBS * SLICES_PER_CLB;
     // CLB slice feedback pips
-    if(CLB_INTERNAL_FEEDBACK) expected_pips += CLBS_X * CLBS_Y * (SLICES_PER_CLB * SLICE_INPUTS + 2) * (SLICES_PER_CLB * SLICE_OUTPUTS);
+    if(CLB_INTERNAL_FEEDBACK) expected_pips += CLBS * (SLICES_PER_CLB * SLICE_INPUTS + 2) * (SLICES_PER_CLB * SLICE_OUTPUTS);
     // CLB slice input pips
-    expected_pips += CLBS_X * CLBS_Y * SLICES_PER_CLB * SLICE_INPUTS * 4;
+    expected_pips += CLBS * SLICES_PER_CLB * SLICE_INPUTS * 4;
     // CLB slice output pips
-    expected_pips += CLBS_X * CLBS_Y * SLICES_PER_CLB * SLICE_OUTPUTS * 4;
+    expected_pips += CLBS * SLICES_PER_CLB * SLICE_OUTPUTS * 4;
+    // RAM input pips
+    if(SPARSE_INPUT) expected_pips += NUM_RAM * 6 * CHANNEL_WIDTH / 2 * 4;
+    else expected_pips += NUM_RAM * 6 * CHANNEL_WIDTH * 4;
+    // RAM output pips
+    if(SPARSE_OUTPUT) expected_pips += NUM_RAM * CHANNEL_WIDTH / 2 * 4;
+    else expected_pips += NUM_RAM * CHANNEL_WIDTH * 4;
+    // RAM Internal pips W_DATA, R_DATA, WE, CLK, RW_ADDR, R_ADDR
+    expected_pips += NUM_RAM * (4 + 4 + 2 + 9 + 9);
     log_info("Expected # pips: %ld\n", expected_pips);
     assert(count == expected_pips);
 }
@@ -681,6 +829,22 @@ void Mesh::build_iob_bels(size_t x, size_t y) {
     }
 }
 
+void Mesh::build_ram_bels(size_t x, size_t y) {
+    assert(mesh[y][x] == TILE_RAM);
+
+    BelId bel = ctx->addBel(h->xy_id(x, y, id_BRAM), id_BRAM, Loc(x, y, 0), false, false);
+    ctx->addBelPin(bel, id_CLK, wire_mesh[y][x]["CLK"][0], PortType::PORT_IN);
+    for(size_t i = 0; i < 9; i++) {
+        ctx->addBelPin(bel, ctx->idf("RW_ADDR[%d]", i), wire_mesh[y][x]["RW_ADDR"][i], PortType::PORT_IN);
+        ctx->addBelPin(bel, ctx->idf("R_ADDR[%d]", i),  wire_mesh[y][x]["R_ADDR"][i],  PortType::PORT_IN);
+    }
+    ctx->addBelPin(bel, id_WE, wire_mesh[y][x]["WE"][0], PortType::PORT_IN);
+    for(size_t i = 0; i < 4; i++) {
+        ctx->addBelPin(bel, ctx->idf("W_DATA[%d]", i), wire_mesh[y][x]["W_DATA"][i], PortType::PORT_IN);
+        ctx->addBelPin(bel, ctx->idf("R_DATA[%d]", i),  wire_mesh[y][x]["R_DATA"][i],  PortType::PORT_OUT);
+    }
+}
+
 void Mesh::build_bels() {
     for(size_t y = 0; y < DIM_Y; y++) {
         for(size_t x = 0; x < DIM_X; x++) {
@@ -690,6 +854,9 @@ void Mesh::build_bels() {
                     break;
                 case TILE_IOB:
                     build_iob_bels(x, y);
+                    break;
+                case TILE_RAM:
+                    build_ram_bels(x, y);
                     break;
                 default:
                     break;
@@ -701,10 +868,13 @@ void Mesh::build_bels() {
     log_info("%ld BELs built\n", count);
 
     size_t expected_bels = 0;
+    const size_t CLBS = CLBS_X * CLBS_Y - NUM_RAM;
     // CLB Slices -> LUT and FF
-    expected_bels += CLBS_X * CLBS_Y * SLICES_PER_CLB * 2;
+    expected_bels += CLBS * SLICES_PER_CLB * 2;
     // IOB
     expected_bels += (CLBS_X + CLBS_Y) * 2 * IO_PER_IOB;
+    // RAM
+    expected_bels += NUM_RAM;
     log_info("Expected # BELs: %ld\n", expected_bels);
     assert(count == expected_bels);
 }
@@ -721,14 +891,43 @@ void Mesh::update_dff_timing(const CellInfo *ci) {
     ctx->addCellTimingClockToOut(ci->name, id_Q, id_CLK, DFF_CLK_TO_Q);
 }
 
+void Mesh::update_ram_timing(CellInfo *ci) {
+    ctx->addCellTimingClock(ci->name, id_CLK);
+    ctx->addCellTimingSetupHold(ci->name, id_WE, id_CLK, RAM_SETUP, RAM_HOLD);
+    for(size_t addr = 0; addr < 9; addr++) {
+        ctx->addCellTimingSetupHold(ci->name, ctx->idf("RW_ADDR[%d]", addr), id_CLK, RAM_SETUP, RAM_HOLD);
+        ctx->addCellTimingSetupHold(ci->name, ctx->idf("R_ADDR[%d]", addr), id_CLK, RAM_SETUP, RAM_HOLD);
+    }
+    for(size_t data = 0; data < 4; data++) {
+        ctx->addCellTimingSetupHold(ci->name, ctx->idf("W_DATA[%d]", data), id_CLK, RAM_SETUP, RAM_HOLD);
+    }
+    for(size_t addr = 0; addr < 9; addr++) {
+        for(size_t data = 0; data < 4; data++) {
+            if(ci->params[ctx->id("DUAL_PORT")].as_bool())
+                ctx->addCellTimingDelay(ci->name, ctx->idf("RW_ADDR[%d]", addr), ctx->idf("R_DATA[%d]", data), RAM_DELAY);
+            ctx->addCellTimingDelay(ci->name, ctx->idf("R_ADDR[%d]", addr), ctx->idf("R_DATA[%d]", data), RAM_DELAY);
+        }
+    }
+}
+
+void Mesh::update_iob_timing(const CellInfo *ci) {
+    if(ci->type == id_IOB || ci->type == id_IBUF) {
+        ctx->addCellTimingDelay(ci->name, id_PAD, id_O, BUF1_DELAY);
+    }
+    if(ci->type == id_IOB || ci->type == id_OBUF) {
+        ctx->addCellTimingDelay(ci->name, id_I,  id_PAD, BUF1_DELAY);
+        ctx->addCellTimingDelay(ci->name, id_EN, id_PAD, TBUF1_ENABLE_DELAY);
+    }
+}
+
 void Mesh::update_timing() {
     for(auto &cell : ctx->cells) {
         CellInfo *ci = cell.second.get();
-        if(ci->type == id_LUT)      update_lut_timing(ci);
-        else if(ci->type == id_DFF) update_dff_timing(ci);
-        else if(ci->type == id_IOB)  { }
-        else if(ci->type == id_IBUF) { }
-        else if(ci->type == id_OBUF) { }
+        if(ci->type == id_LUT)       update_lut_timing(ci);
+        else if(ci->type == id_DFF)  update_dff_timing(ci);
+        else if(ci->type == id_BRAM) update_ram_timing(ci);
+        else if(ci->type == id_IOB || ci->type == id_IBUF || ci->type == id_OBUF)
+            update_iob_timing(ci);
         else log_error("Unknown cell type %s\n", ci->type.c_str(ctx));
     }
 }
