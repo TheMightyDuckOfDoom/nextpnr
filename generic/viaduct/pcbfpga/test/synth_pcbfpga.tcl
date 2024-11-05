@@ -17,12 +17,13 @@ opt -full
 iopadmap -bits -inpad IBUF O:PAD -outpad OBUF I:PAD
 stat
 techmap -map +/techmap.v
-opt -fast
-dfflegalize -cell \$_DFF_P_ 0
+opt -full
+dfflegalize -cell \$_DFF_P_ x -cell \$_DFFE_PP_ x -cell \$_SDFF_PN0_ x -cell \$_SDFFE_PN0P_ x -mince 4 -minsrst 4
 stat
-abc -lut $LUT_K -dress
+abc9 -lut $LUT_K
 clean
 techmap -D LUT_K=$LUT_K -map [file dirname [file normalize $argv0]]/cells_map.v
+opt_merge -share_all
 clean
 stat
 #extract -map [file dirname [file normalize $argv0]]/combine_lut3.v

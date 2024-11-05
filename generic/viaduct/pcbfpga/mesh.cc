@@ -43,13 +43,14 @@ bool is_qsb(size_t x, size_t y, size_t DIM_X, size_t DIM_Y) {
     return !is_perimeter(x, y, DIM_X, DIM_Y) && (x % 2 == 1) && (y % 2 == 1);
 }
 
-void Mesh::init(Context *ctx, ViaductHelpers *h, size_t CLBS_X, size_t CLBS_Y) {
+void Mesh::init(Context *ctx, ViaductHelpers *h, size_t CLBS_X, size_t CLBS_Y, bool print_pips) {
     this->ctx = ctx;
     this->h = h;
     this->CLBS_X = CLBS_X;
     this->CLBS_Y = CLBS_Y;
     this->DIM_X = CLBS_X * 2 + 3;
     this->DIM_Y = CLBS_Y * 2 + 3;
+    this->print_pips = print_pips;
 }
 
 void Mesh::build() {
@@ -58,13 +59,27 @@ void Mesh::build() {
     build_pips();
     build_bels();
 
-    if(true) {
+    if(print_pips) {
         for(auto pip : ctx->getPips()) {
             log_info("Pip %s %s -> %s\n", ctx->getPipName(pip).str(ctx).c_str(), ctx->getWireName(ctx->getPipSrcWire(pip)).str(ctx).c_str(), ctx->getWireName(ctx->getPipDstWire(pip)).str(ctx).c_str());
         }
     }
 
     print();
+
+    // PCB estimate
+    size_t num_clbs = CLBS_X * CLBS_Y;
+    size_t num_qsbs = (CLBS_X - 1) * (CLBS_Y - 1);
+
+    size_t mux8_per_clb = SLICES_PER_CLB * (2 + SLICE_INPUTS) + 2;
+
+    size_t buf_per_qsb = CHANNEL_WIDTH * 6;
+
+    log_info("CLBs use %ld mux8 each, %ld mux8 total\n", mux8_per_clb, num_clbs * mux8_per_clb);
+    log_info("QSBs use %ld buffers each, %ld buffers total\n", buf_per_qsb, num_qsbs * buf_per_qsb);
+
+    size_t qcb_mux8_per_clb = CLB_INPUTS_PER_SIDE * 2;
+    log_info("QCBs use %ld mux8 each, %ld mux8 total\n", qcb_mux8_per_clb, num_clbs * qcb_mux8_per_clb);
 
     // Adjust timing estimates
     ctx->args.delayOffset = MUX8_DELAY;
@@ -153,6 +168,8 @@ wire_map_t Mesh::build_clb_wires(size_t x, size_t y) {
 
     /// Slice wires
     wire_map["SLICE_CLK"] = std::vector<WireId>(1, ctx->addWire(h->xy_id(x, y, ctx->idf("SLICE_CLK")), ctx->id("SLICE_CLK"), x, y));
+    wire_map["SLICE_EN"] = std::vector<WireId>(1, ctx->addWire(h->xy_id(x, y, ctx->idf("SLICE_EN")), ctx->id("SLICE_EN"), x, y));
+    wire_map["SLICE_RST_N"] = std::vector<WireId>(1, ctx->addWire(h->xy_id(x, y, ctx->idf("SLICE_RST_N")), ctx->id("SLICE_RST_N"), x, y));
 
     // Inputs
     wire_map["SLICE_IN"] = std::vector<WireId>(SLICES_PER_CLB * SLICE_INPUTS);
@@ -511,6 +528,35 @@ void Mesh::build_clb_pips(size_t x, size_t y) {
         WireId src = wire_mesh[y][x][dir][LUT_INPUTS + 1];
         WireId dst = wire_mesh[y][x]["SLICE_CLK"][0];
         ctx->addPip(h->xy_id(x, y, ctx->idf("SLICE_CLK_%s", dir)), id_CLBPIP, src, dst, delay, Loc(x, y, 0));
+
+        dst = wire_mesh[y][x]["SLICE_EN"][0];
+        ctx->addPip(h->xy_id(x, y, ctx->idf("SLICE_EN_%s", dir)), id_CLBPIP, src, dst, delay, Loc(x, y, 0));
+
+        dst = wire_mesh[y][x]["SLICE_RST_N"][0];
+        ctx->addPip(h->xy_id(x, y, ctx->idf("SLICE_RST_N_%s", dir)), id_CLBPIP, src, dst, delay, Loc(x, y, 0));
+    }
+
+    // Connect slice outputs to slice inputs -> Feedback paths
+    if(CLB_INTERNAL_FEEDBACK) {
+        for(size_t slice_in = 0; slice_in < SLICES_PER_CLB * SLICE_INPUTS; slice_in++) {
+            for(size_t slice_out = 0; slice_out < SLICES_PER_CLB * SLICE_OUTPUTS; slice_out++) {
+                WireId src = wire_mesh[y][x]["SLICE_OUT"][slice_out];
+                WireId dst = wire_mesh[y][x]["SLICE_IN"][slice_in];
+                ctx->addPip(h->xy_id(x, y, ctx->idf("SLICE%d_OUT%d_to_SLICE%d_IN%d_FEEDBACK", slice_out / SLICE_OUTPUTS, slice_out % SLICE_OUTPUTS, slice_in / SLICE_INPUTS, slice_in % SLICE_INPUTS)), id_CLBPIP, src, dst, delay, Loc(x, y, 0));
+            }
+        }
+
+        // DFF Enable and Reset
+        for(size_t slice = 0; slice < SLICES_PER_CLB; slice++) {
+            for(size_t slice_out = 0; slice_out < SLICE_OUTPUTS; slice_out++) {
+                WireId src = wire_mesh[y][x]["SLICE_OUT"][slice * SLICE_OUTPUTS + slice_out];
+                WireId dst = wire_mesh[y][x]["SLICE_EN"][0];
+                ctx->addPip(h->xy_id(x, y, ctx->idf("SLICE%d_OUT%d_to_SLICE_EN_FEEDBACK", slice, slice_out)), id_CLBPIP, src, dst, delay, Loc(x, y, 0));
+
+                dst = wire_mesh[y][x]["SLICE_RST_N"][0];
+                ctx->addPip(h->xy_id(x, y, ctx->idf("SLICE%d_OUT%d_to_SLICE_RST_N_FEEDBACK", slice, slice_out)), id_CLBPIP, src, dst, delay, Loc(x, y, 0));
+            }
+        }
     }
 
     // Connect LUT F to FF D
@@ -588,10 +634,12 @@ void Mesh::build_pips() {
     // CLB output pips
     if(SPARSE_CLB_OUTPUT) expected_pips += CLBS_X * CLBS_Y * CLB_OUTPUTS_PER_SIDE * CHANNEL_WIDTH / 2 * 4;
     else expected_pips += CLBS_X * CLBS_Y * CLB_OUTPUTS_PER_SIDE * CHANNEL_WIDTH * 4;
-    // CLB control signals
-    expected_pips += CLBS_X * CLBS_Y * 4;
+    // CLB control signals: CLK, EN, RST_N
+    expected_pips += CLBS_X * CLBS_Y * 4 * 3;
     // CLB slice internal pips (LUT -> FF)
     if(LUT_F_TO_DFF_D) expected_pips += CLBS_X * CLBS_Y * SLICES_PER_CLB;
+    // CLB slice feedback pips
+    if(CLB_INTERNAL_FEEDBACK) expected_pips += CLBS_X * CLBS_Y * (SLICES_PER_CLB * SLICE_INPUTS + 2) * (SLICES_PER_CLB * SLICE_OUTPUTS);
     // CLB slice input pips
     expected_pips += CLBS_X * CLBS_Y * SLICES_PER_CLB * SLICE_INPUTS * 4;
     // CLB slice output pips
@@ -615,6 +663,8 @@ void Mesh::build_clb_bels(size_t x, size_t y) {
         BelId dff = ctx->addBel(h->xy_id(x, y, ctx->idf("SLICE%d_DFF", slice)), id_DFF, Loc(x, y, slice * 2 + 1), false, false);
         ctx->addBelPin(dff, id_D, wire_mesh[y][x]["SLICE_IN"][slice * SLICE_INPUTS + LUT_INPUTS], PortType::PORT_IN);
         ctx->addBelPin(dff, id_CLK, wire_mesh[y][x]["SLICE_CLK"][0], PortType::PORT_IN);
+        ctx->addBelPin(dff, id_EN, wire_mesh[y][x]["SLICE_EN"][0], PortType::PORT_IN);
+        ctx->addBelPin(dff, id_RST_N, wire_mesh[y][x]["SLICE_RST_N"][0], PortType::PORT_IN);
         ctx->addBelPin(dff, id_Q, wire_mesh[y][x]["SLICE_OUT"][slice * SLICE_OUTPUTS + 1], PortType::PORT_OUT);
     }
 }

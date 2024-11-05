@@ -29,6 +29,42 @@ typedef std::vector<std::vector<tile_type_t>> mesh_t;
 typedef std::map<std::string, std::vector<WireId>> wire_map_t;
 typedef std::vector<std::vector<wire_map_t>> wire_mesh_t;
 
+// Routing channel width
+const size_t CHANNEL_WIDTH = 16;
+
+// Number of inputs to a LUT
+const size_t LUT_INPUTS = 4;
+// LUT inputs + dedicated DFF D input
+const size_t SLICE_INPUTS = LUT_INPUTS + 1;
+// LUT F and DFF Q outputs
+const size_t SLICE_OUTPUTS = 2;
+// Number of slices per CLB
+const size_t SLICES_PER_CLB = 4;
+// One SLICE inputs + CLK
+const size_t CLB_INPUTS_PER_SIDE = SLICE_INPUTS + 1;
+// One SLICE outputs
+const size_t CLB_OUTPUTS_PER_SIDE = SLICE_OUTPUTS;
+// Number of IOBUFs per IOB tile
+const size_t IO_PER_IOB = 2;
+
+// If this is true, CLB inputs are only connect to every other channel
+const bool SPARSE_CLB_INPUT = true;
+// If this is true, CLB outputs are only connect to every other channel
+const bool SPARSE_CLB_OUTPUT = false;
+// Add a pip from the LUT F output to the DFF D input
+const bool LUT_F_TO_DFF_D = true;
+// If this is true, CLB has internal feedback paths from each slice to each other slice
+const bool CLB_INTERNAL_FEEDBACK = true;
+
+const double DUMMY_DELAY = 0.05;
+const double MUX2_DELAY = 2.3;
+const double MUX8_DELAY = 19.0;
+const double QCB_INPUT_DELAY = MUX8_DELAY;
+const double LUT_DELAY = MUX2_DELAY + MUX8_DELAY;
+const double DFF_SETUP = 1.5;
+const double DFF_HOLD = 0.5;
+const double DFF_CLK_TO_Q = 2.5;
+
 struct Mesh {
     // Config
     size_t DIM_X;
@@ -36,49 +72,16 @@ struct Mesh {
     size_t CLBS_X;
     size_t CLBS_Y;
 
-    // Routing channel width
-    const size_t CHANNEL_WIDTH = 16;
-
-    // Number of inputs to a LUT
-    const size_t LUT_INPUTS = 4;
-    // LUT inputs + dedicated DFF D input
-    const size_t SLICE_INPUTS = LUT_INPUTS + 1;
-    // LUT F and DFF Q outputs
-    const size_t SLICE_OUTPUTS = 2;
-    // Number of slices per CLB
-    const size_t SLICES_PER_CLB = 4;
-    // One SLICE inputs + CLK
-    const size_t CLB_INPUTS_PER_SIDE = SLICE_INPUTS + 1;
-    // One SLICE outputs
-    const size_t CLB_OUTPUTS_PER_SIDE = SLICE_OUTPUTS;
-    // Number of IOBUFs per IOB tile
-    const size_t IO_PER_IOB = 2;
-
-    // If this is true, CLB inputs are only connect to every other channel
-    const bool SPARSE_CLB_INPUT = true;
-    // If this is true, CLB outputs are only connect to every other channel
-    const bool SPARSE_CLB_OUTPUT = false;
-    // Add a pip from the LUT F output to the DFF D input
-    const bool LUT_F_TO_DFF_D = true;
-
-    const double DUMMY_DELAY = 0.05;
-    const double MUX2_DELAY = 2.3;
-    const double MUX8_DELAY = 19.0;
-    const double QCB_INPUT_DELAY = MUX8_DELAY;
-    const double LUT_DELAY = MUX2_DELAY + MUX8_DELAY;
-    const double DFF_SETUP = 1.5;
-    const double DFF_HOLD = 0.5;
-    const double DFF_CLK_TO_Q = 2.5;
-
     mesh_t mesh;
     wire_mesh_t wire_mesh;
 
-    void init(Context *ctx, ViaductHelpers *h, size_t clbs_x, size_t clbs_y);
+    void init(Context *ctx, ViaductHelpers *h, size_t clbs_x, size_t clbs_y, bool print_pips);
     void build();
     void update_timing();
 private:
     Context *ctx;
     ViaductHelpers *h;
+    bool print_pips = false;
 
     void print();
     void build_mesh();

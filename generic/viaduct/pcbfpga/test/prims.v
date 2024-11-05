@@ -16,13 +16,20 @@ module LUT #(
 	assign F = INIT[I_pd];
 endmodule
 
-module DFF (
-	input CLK, D,
+module DFF #(
+	parameter ENABLE_USED = 1'b0,
+	parameter RST_USED = 1'b0
+) (
+	input CLK, D, EN, RST_N,
 	output reg Q
 );
 	initial Q = 1'b0;
-	always @(posedge CLK)
-		Q <= D;
+	always @(posedge CLK) begin
+		if (RST_USED && !RST_N)
+			Q <= 1'b0;
+		else if (!ENABLE_USED || (ENABLE_USED && EN))
+			Q <= D;
+	end
 endmodule
 
 module IOB #(
