@@ -648,11 +648,22 @@ void Mesh::build_clb_pips(size_t x, size_t y) {
             // F output
             WireId src = wire_mesh[y][x]["SLICE_OUT"][slice * SLICE_OUTPUTS];
             WireId dst = wire_mesh[y][x][dir][0];
-            ctx->addPip(h->xy_id(x, y, ctx->idf("SLICE%d_%s_F", slice, dir)), id_CLBPIP, src, dst, delay, Loc(x, y, 0));
+            ctx->addPip(h->xy_id(x, y, ctx->idf("SLICE%d_%s0_F", slice, dir)), id_CLBPIP, src, dst, delay, Loc(x, y, 0));
             // Q output
             src = wire_mesh[y][x]["SLICE_OUT"][slice * SLICE_OUTPUTS + 1];
             dst = wire_mesh[y][x][dir][1];
-            ctx->addPip(h->xy_id(x, y, ctx->idf("SLICE%d_%s_Q", slice, dir)), id_CLBPIP, src, dst, delay, Loc(x, y, 0));
+            ctx->addPip(h->xy_id(x, y, ctx->idf("SLICE%d_%s1_Q", slice, dir)), id_CLBPIP, src, dst, delay, Loc(x, y, 0));
+
+            if(SPARSE_OUTPUT) {
+                // F output
+                WireId src = wire_mesh[y][x]["SLICE_OUT"][slice * SLICE_OUTPUTS];
+                WireId dst = wire_mesh[y][x][dir][1];
+                ctx->addPip(h->xy_id(x, y, ctx->idf("SLICE%d_%s1_F", slice, dir)), id_CLBPIP, src, dst, delay, Loc(x, y, 0));
+                // Q output
+                src = wire_mesh[y][x]["SLICE_OUT"][slice * SLICE_OUTPUTS + 1];
+                dst = wire_mesh[y][x][dir][0];
+                ctx->addPip(h->xy_id(x, y, ctx->idf("SLICE%d_%s0_Q", slice, dir)), id_CLBPIP, src, dst, delay, Loc(x, y, 0));
+            }
         }
     }
 }
@@ -784,6 +795,7 @@ void Mesh::build_pips() {
     expected_pips += CLBS * SLICES_PER_CLB * SLICE_INPUTS * 4;
     // CLB slice output pips
     expected_pips += CLBS * SLICES_PER_CLB * SLICE_OUTPUTS * 4;
+    if(SPARSE_OUTPUT) expected_pips += CLBS * SLICES_PER_CLB * SLICE_OUTPUTS * 4;
     // RAM input pips
     if(SPARSE_INPUT) expected_pips += NUM_RAM * 6 * CHANNEL_WIDTH / 2 * 4;
     else expected_pips += NUM_RAM * 6 * CHANNEL_WIDTH * 4;

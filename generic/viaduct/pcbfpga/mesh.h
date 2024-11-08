@@ -50,8 +50,9 @@ const size_t IO_PER_IOB = 2;
 
 // If this is true, CLB, RAM inputs are only connect to every other channel
 const bool SPARSE_INPUT = true;
-// If this is true, CLB, RAM outputs are only connect to every other channel
-const bool SPARSE_OUTPUT = false;
+// If this is true, CLB, RAM outputs are only connect to every other channel,
+// but the output can select between all slices outputs
+const bool SPARSE_OUTPUT = true;
 // Add a pip from the LUT F output to the DFF D input
 const bool LUT_F_TO_DFF_D = true;
 // If this is true, CLB has internal feedback paths from each slice to each other slice
