@@ -181,11 +181,17 @@ wire_map_t Mesh::build_clb_wires(size_t x, size_t y) {
 
     // Inputs
     wire_map["SLICE_IN"] = std::vector<WireId>(SLICES_PER_CLB * SLICE_INPUTS);
+    if(!SLICE_DEDICATED_D_INPUT)
+        wire_map["SLICE_DFF_D"] = std::vector<WireId>(SLICES_PER_CLB);
+
     for(size_t i = 0; i < SLICES_PER_CLB; i++) {
         for(size_t j = 0; j < LUT_INPUTS; j++) {
             wire_map["SLICE_IN"][i * SLICE_INPUTS + j] = ctx->addWire(h->xy_id(x, y, ctx->idf("SLICE%d_LUT%d", i, j)), ctx->id("SLICE_LUT"), x, y);
         }
-        wire_map["SLICE_IN"][i * SLICE_INPUTS + LUT_INPUTS] = ctx->addWire(h->xy_id(x, y, ctx->idf("SLICE%d_D", i)), ctx->id("SLICE_D"), x, y);
+        if(SLICE_DEDICATED_D_INPUT)
+            wire_map["SLICE_IN"][i * SLICE_INPUTS + LUT_INPUTS] = ctx->addWire(h->xy_id(x, y, ctx->idf("SLICE%d_D", i)), ctx->id("SLICE_D"), x, y);
+        else
+            wire_map["SLICE_DFF_D"][i] = ctx->addWire(h->xy_id(x, y, ctx->idf("SLICE%d_D", i)), ctx->id("SLICE_D"), x, y);
     }
 
     // Outputs
@@ -592,13 +598,15 @@ void Mesh::build_clb_pips(size_t x, size_t y) {
                 ctx->addPip(h->xy_id(x, y, ctx->idf("SLICE%d_%s_LUT%d", slice, dir, lut_in)), id_CLBPIP, src, dst, delay, Loc(x, y, 0));
             }
             // D input -> Dedicated input
-            WireId src = wire_mesh[y][x][dir][LUT_INPUTS];
-            WireId dst = wire_mesh[y][x]["SLICE_IN"][slice * SLICE_INPUTS + LUT_INPUTS];
-            ctx->addPip(h->xy_id(x, y, ctx->idf("SLICE%d_%s_D", slice, dir)), id_CLBPIP, src, dst, MUX2_DELAY, Loc(x, y, 0));
+            if(SLICE_DEDICATED_D_INPUT) {
+                WireId src = wire_mesh[y][x][dir][LUT_INPUTS];
+                WireId dst = wire_mesh[y][x]["SLICE_IN"][slice * SLICE_INPUTS + LUT_INPUTS];
+                ctx->addPip(h->xy_id(x, y, ctx->idf("SLICE%d_%s_D", slice, dir)), id_CLBPIP, src, dst, MUX2_DELAY, Loc(x, y, 0));
+            }
         }
 
         // Connect control signals
-        WireId src = wire_mesh[y][x][dir][LUT_INPUTS + 1];
+        WireId src = wire_mesh[y][x][dir][SLICE_INPUTS];
         WireId dst = wire_mesh[y][x]["SLICE_CLK"][0];
         ctx->addPip(h->xy_id(x, y, ctx->idf("SLICE_CLK_%s", dir)), id_CLBPIP, src, dst, delay, Loc(x, y, 0));
 
@@ -636,8 +644,21 @@ void Mesh::build_clb_pips(size_t x, size_t y) {
     if(LUT_F_TO_DFF_D) {
         for(size_t slice = 0; slice < SLICES_PER_CLB; slice++) {
             WireId src = wire_mesh[y][x]["SLICE_OUT"][slice * SLICE_OUTPUTS]; // LUT F
-            WireId dst = wire_mesh[y][x]["SLICE_IN"][slice * SLICE_INPUTS + LUT_INPUTS]; // FF D
+            WireId dst;
+            if(SLICE_DEDICATED_D_INPUT)
+                dst = wire_mesh[y][x]["SLICE_IN"][slice * SLICE_INPUTS + LUT_INPUTS]; // FF D
+            else
+                dst = wire_mesh[y][x]["SLICE_DFF_D"][slice]; // FF D
             ctx->addPip(h->xy_id(x, y, ctx->idf("SLICE%d_F_D", slice)), id_CLBPIP, src, dst, MUX2_DELAY, Loc(x, y, 0));
+        }
+    }
+
+    // Connect FF D to last LUT input
+    if(!SLICE_DEDICATED_D_INPUT) {
+        for(size_t slice = 0; slice < SLICES_PER_CLB; slice++) {
+            WireId src = wire_mesh[y][x]["SLICE_IN"][slice * SLICE_INPUTS + (LUT_INPUTS - 1)]; // Last LUT input
+            WireId dst = wire_mesh[y][x]["SLICE_DFF_D"][slice];
+            ctx->addPip(h->xy_id(x, y, ctx->idf("SLICE%d_IN_D", slice)), id_CLBPIP, src, dst, MUX2_DELAY, Loc(x, y, 0));
         }
     }
 
@@ -791,6 +812,8 @@ void Mesh::build_pips() {
     if(LUT_F_TO_DFF_D) expected_pips += CLBS * SLICES_PER_CLB;
     // CLB slice feedback pips
     if(CLB_INTERNAL_FEEDBACK) expected_pips += CLBS * (SLICES_PER_CLB * SLICE_INPUTS + 2) * (SLICES_PER_CLB * SLICE_OUTPUTS);
+    // CLB slice internal pips if no dedicated D input -> last LUT input to FF D
+    if(!SLICE_DEDICATED_D_INPUT) expected_pips += CLBS * SLICES_PER_CLB;
     // CLB slice input pips
     expected_pips += CLBS * SLICES_PER_CLB * SLICE_INPUTS * 4;
     // CLB slice output pips
@@ -821,7 +844,12 @@ void Mesh::build_clb_bels(size_t x, size_t y) {
 
         // FF
         BelId dff = ctx->addBel(h->xy_id(x, y, ctx->idf("SLICE%d_DFF", slice)), id_DFF, Loc(x, y, slice * 2 + 1), false, false);
-        ctx->addBelPin(dff, id_D, wire_mesh[y][x]["SLICE_IN"][slice * SLICE_INPUTS + LUT_INPUTS], PortType::PORT_IN);
+        WireId dff_D;
+        if(SLICE_DEDICATED_D_INPUT)
+            dff_D = wire_mesh[y][x]["SLICE_IN"][slice * SLICE_INPUTS + LUT_INPUTS];
+        else
+            dff_D = wire_mesh[y][x]["SLICE_DFF_D"][slice];
+        ctx->addBelPin(dff, id_D, dff_D, PortType::PORT_IN);
         ctx->addBelPin(dff, id_CLK, wire_mesh[y][x]["SLICE_CLK"][0], PortType::PORT_IN);
         ctx->addBelPin(dff, id_EN, wire_mesh[y][x]["SLICE_EN"][0], PortType::PORT_IN);
         ctx->addBelPin(dff, id_RST_N, wire_mesh[y][x]["SLICE_RST_N"][0], PortType::PORT_IN);

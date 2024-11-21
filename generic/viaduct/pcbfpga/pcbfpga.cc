@@ -336,6 +336,60 @@ struct PCBFPGAImpl : ViaductAPI
         mesh.update_timing();
     }
 
+    void postPlace() override {
+        std::vector<std::vector<dict<IdString, int>>> slice_inputs(clbs_x, std::vector<dict<IdString, int>>(clbs_y));
+        std::vector<std::vector<dict<IdString, int>>> slice_outputs(clbs_x, std::vector<dict<IdString, int>>(clbs_y));
+        for(auto &ci : ctx->cells) {
+            CellInfo *cell = ci.second.get();
+            if(cell->type != id_LUT && cell->type != id_DFF) {
+                continue;
+            }
+            auto loc = cell->getLocation();
+            int x = (loc.x - 2) / 2;
+            int y = (loc.y - 2) / 2;
+            for(auto port : cell->ports) {
+                auto* net = port.second.net;
+                if(net == nullptr)
+                    continue;
+                auto net_name = net->name;
+                if(port.second.type == PORT_IN) {
+                    if(slice_inputs[x][y].count(net_name) == 0) {
+                        slice_inputs[x][y][net_name] = 0;
+                    }
+                    slice_inputs[x][y][net_name]++;
+                } else if(port.second.type == PORT_OUT) {
+                    if(slice_outputs[x][y].count(net_name) == 0) {
+                        slice_outputs[x][y][net_name] = 0;
+                    }
+                    slice_outputs[x][y][net_name]++;
+                }
+            }
+        }
+
+        int min_inputs = INT_MAX;
+        int max_inputs = 0;
+        int min_outputs = INT_MAX;
+        int max_outputs = 0;
+        int total_inputs = 0;
+        int total_outputs = 0;
+        for(size_t x = 0; x < clbs_x; x++) {
+            for(size_t y = 0; y < clbs_y; y++) {
+                int num_inputs = slice_inputs[x][y].size();
+                int num_outputs = slice_outputs[x][y].size();
+                total_inputs += num_inputs;
+                total_outputs += num_outputs;
+                min_inputs = std::min(min_inputs, num_inputs);
+                max_inputs = std::max(max_inputs, num_inputs);
+                min_outputs = std::min(min_outputs, num_outputs);
+                max_outputs = std::max(max_outputs, num_outputs);
+                printf("CLB (%2lu, %2lu) has %d inputs and %d outputs\n", x, y, num_inputs, num_outputs);
+            }
+        }
+        printf("CLB input range: %2d-%2d, output range: %2d-%2d\n", min_inputs, max_inputs, min_outputs, max_outputs);
+        printf("Total inputs: %d, total outputs: %d\n", total_inputs, total_outputs);
+        printf("Average inputs: %.2f, average outputs: %.2f\n", (float)total_inputs / (clbs_x * clbs_y), (float)total_outputs / (clbs_x * clbs_y));
+    }
+
     bool isBelLocationValid(BelId bel, bool explain_invalid) const override
     {
         Loc l = ctx->getBelLocation(bel);
@@ -376,6 +430,12 @@ struct PCBFPGAImpl : ViaductAPI
         const NetInfo *dff_clk = nullptr;
         const NetInfo *dff_en = nullptr;
         const NetInfo *dff_rst = nullptr;
+
+        // Used if no dedicated D input
+        bool last_lut_input_used = false;
+        const NetInfo *lut_f = nullptr;
+        const NetInfo *lut_last_input = nullptr;
+        const NetInfo *dff_d = nullptr;
     } cell_info_t;
     std::vector<cell_info_t> cell_info;
 
@@ -389,12 +449,38 @@ struct PCBFPGAImpl : ViaductAPI
                 fc.dff_clk = ci->getPort(id_CLK);
                 fc.dff_en = ci->getPort(id_EN);
                 fc.dff_rst = ci->getPort(id_RST_N);
+                fc.dff_d = ci->getPort(id_D);
+            } else if (ci->type == id_LUT) {
+                fc.lut_f = ci->getPort(id_F);
+                fc.last_lut_input_used = ci->params[id_K].as_int64() == LUT_INPUTS;
+                if(fc.last_lut_input_used)
+                    fc.lut_last_input = ci->getPort(ctx->id("I[" + std::to_string(LUT_INPUTS - 1) + "]"));
             }
         }
     }
 
     bool slice_valid(int x, int y, int z) const
     {
+        // If no dedicated D input, check that either the LUT drives the DFF D input or the last LUT input is unused
+        if(!SLICE_DEDICATED_D_INPUT) {
+            const CellInfo* lut = ctx->getBoundBelCell(ctx->getBelByLocation(Loc(x, y, z * 2)));
+            const CellInfo* dff = ctx->getBoundBelCell(ctx->getBelByLocation(Loc(x, y, z * 2 + 1)));
+
+            if(lut != nullptr && dff != nullptr) {
+                // LUT and DFF are used
+                const auto &lut_data = cell_info.at(lut->flat_index);
+                const auto &dff_data = cell_info.at(dff->flat_index);
+
+                // Check if LUT drives DFF D input (only if there is a direct LUT DFF connection)
+                if(dff_data.dff_d != lut_data.lut_f || !LUT_F_TO_DFF_D) {
+                    if(lut_data.last_lut_input_used && (lut_data.lut_last_input != dff_data.dff_d)) {
+                        // Last LUT input is used, but also need it for DFF D -> invalid
+                        return false;
+                    }
+                }
+            }
+        }
+
         // Check that all DFFs in the slice are clocked by the same net
         const NetInfo *clk_net = nullptr;
         const NetInfo *en_net = nullptr;

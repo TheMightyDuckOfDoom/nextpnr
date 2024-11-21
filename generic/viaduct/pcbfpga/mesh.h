@@ -33,10 +33,14 @@ typedef std::vector<std::vector<wire_map_t>> wire_mesh_t;
 // Routing channel width
 const size_t CHANNEL_WIDTH = 16;
 
+// If this is true, each slice has a dedicated D input
+// Otherwise the most significant LUT input is used
+const bool SLICE_DEDICATED_D_INPUT = true;
+
 // Number of inputs to a LUT
 const size_t LUT_INPUTS = 4;
 // LUT inputs + dedicated DFF D input
-const size_t SLICE_INPUTS = LUT_INPUTS + 1;
+const size_t SLICE_INPUTS = LUT_INPUTS + (SLICE_DEDICATED_D_INPUT ? 1 : 0);
 // LUT F and DFF Q outputs
 const size_t SLICE_OUTPUTS = 2;
 // Number of slices per CLB
