@@ -1,5 +1,8 @@
 set(VIADUCT_UARCHES "example" "okami" "fabulous" "xcxk")
 foreach(uarch ${VIADUCT_UARCHES})
+    if(${uarch} STREQUAL "xcxk") 
+        add_subdirectory(${family}/viaduct/${uarch})
+    endif()
     aux_source_directory(${family}/viaduct/${uarch} UARCH_FILES)
     foreach(target ${family_targets})
         target_sources(${target} PRIVATE ${UARCH_FILES})
