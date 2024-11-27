@@ -52,6 +52,37 @@ struct XCxkImpl : ViaductAPI
             CellTypePort(id_OBUF, id_O),
         };
         h.remove_nextpnr_iobs(top_ports);
+
+        // Pack IOBs and LUTs
+        for (auto &cell : ctx->cells) {
+            auto &ci = *cell.second;
+            if(ci.type == id_IBUF) {
+                log_info("Converting IBUF %s to IOB\n", ci.name.c_str(ctx));
+                // Change type
+                ci.type = id_IOB;
+                // Swap I with PAD
+                // Swap O with I
+                ci.renamePort(id_I, id_PAD);
+                ci.renamePort(id_O, id_I);
+            } else if(ci.type == id_OBUF) {
+                log_info("Converting OBUF %s to IOB\n", ci.name.c_str(ctx));
+                // Change type
+                ci.type = id_IOB;
+                // Swap O with PAD
+                // Swap I with O
+                ci.renamePort(id_O, id_PAD);
+                ci.renamePort(id_I, id_O);
+            } else if(ci.type == id_LUT) {
+                log_info("Converting LUT %s to LUT5\n", ci.name.c_str(ctx));
+                size_t lut_k = ci.params[ctx->id("K")].as_int64();
+                log_info("LUT K = %ld\n", lut_k);
+
+                // TODO: Implement fractionable LUTs
+                ci.type = id_LUT5;
+
+                ci.renamePort(id_O, id_F);
+            }
+        }
     }
 
     void prePlace() override {}
@@ -70,22 +101,6 @@ struct XCxkImpl : ViaductAPI
     std::string device_name = "3090";
 
     xc3000 device;
-
-    IdString getBelBucketForCellType(IdString cell_type) const override
-    {
-        if (cell_type.in(id_IBUF, id_OBUF))
-            return id_IOB;
-        return cell_type;
-    }
-
-    bool isValidBelForCellType(IdString cell_type, BelId bel) const override
-    {
-        IdString bel_type = ctx->getBelType(bel);
-        if (bel_type == id_IOB)
-            return cell_type.in(id_IBUF, id_OBUF);
-        else
-            return (bel_type == cell_type);
-    }
 };
 
 struct XCxkArch : ViaductArch

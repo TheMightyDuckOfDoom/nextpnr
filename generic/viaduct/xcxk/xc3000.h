@@ -14,6 +14,7 @@ public:
 
 private:
     std::map<std::string, std::vector<std::string>> magic_connections;
+    std::map<std::string, std::vector<std::string>> clb_iob_local_long_pips;
     std::vector<std::vector<std::map<IdString, WireId>>> tile_wires;
 
     // Graphics settings
@@ -44,6 +45,7 @@ private:
     void build_clb_at(size_t x, size_t y);
     void build_iob_at(size_t x, size_t y);
     void build_tile_wires(size_t x, size_t y);
+    void build_clb_wires(size_t x, size_t y);
 };
 
 NEXTPNR_NAMESPACE_END

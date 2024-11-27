@@ -52,6 +52,8 @@ std::string get_path(std::string device, std::string file) {
 
 void xc3000::read_device(std::string device) {
     init_share_dirname();
+
+    // Magic Connections
     std::string path = get_path(device, "MAGIC_CONNECTIONS.txt");
     std::ifstream if_magic_connections(path);
     
@@ -73,6 +75,54 @@ void xc3000::read_device(std::string device) {
             this->magic_connections[magic_name] = std::vector<std::string>();
     
         this->magic_connections[magic_name].push_back(line);
+    }
+
+    // CLB Local Long Pips
+    path = get_path(device, "CLB_LOCAL_LONG_PIPS.txt");
+    std::ifstream if_clb_local_long_pips(path);
+
+    if(!if_clb_local_long_pips.is_open()) {
+        log_error("Unable to open %s\n", path.c_str());
+    }
+
+    while(getline(if_clb_local_long_pips, line)) {
+        if(line.find("\n") != std::string::npos)
+            line = line.replace(line.find_first_of("\n"), 1, "");
+        if(line == "")
+            continue;
+
+        std::string clb_port = line.substr(0, line.find_first_of(" "));
+        std::string wire = line.substr(line.find_first_of(" ") + 1, line.find_first_of(":") - line.find_first_of(" ") - 1);
+        printf("CLB Port: %s, Wire: %s\n", clb_port.c_str(), wire.c_str());
+
+        if(this->clb_iob_local_long_pips.find(clb_port) == this->clb_iob_local_long_pips.end())
+            this->clb_iob_local_long_pips[clb_port] = std::vector<std::string>();
+
+        this->clb_iob_local_long_pips[clb_port].push_back(wire);
+    }
+
+    // IOB Local Long Pips
+    path = get_path(device, "IOB_LOCAL_LONG_PIPS.txt");
+    std::ifstream if_iob_local_long_pips(path);
+
+    if(!if_iob_local_long_pips.is_open()) {
+        log_error("Unable to open %s\n", path.c_str());
+    }
+
+    while(getline(if_iob_local_long_pips, line)) {
+        if(line.find("\n") != std::string::npos)
+            line = line.replace(line.find_first_of("\n"), 1, "");
+        if(line == "")
+            continue;
+
+        std::string iob_port = line.substr(0, line.find_first_of(" "));
+        std::string wire = line.substr(line.find_first_of(" ") + 1, line.find_first_of(":") - line.find_first_of(" ") - 1);
+        printf("IOB Port: %s, Wire: %s\n", iob_port.c_str(), wire.c_str());
+
+        if(this->clb_iob_local_long_pips.find(iob_port) == this->clb_iob_local_long_pips.end())
+            this->clb_iob_local_long_pips[iob_port] = std::vector<std::string>();
+
+        this->clb_iob_local_long_pips[iob_port].push_back(wire);
     }
 }
 
@@ -291,63 +341,202 @@ void xc3000::build_clb_at(size_t x, size_t y) {
     const char row_letter = idx_to_letter(y - 1);
     const char col_letter = idx_to_letter(x - 1);
 
-    auto lut_bel = ctx->addBel(h->xy_id(x, y, ctx->idf("%c%c_LUT", row_letter, col_letter)), id_LUT, Loc(x, y, 0), false, false);
+    // Bels
+    auto lut_fg_bel = ctx->addBel(h->xy_id(x, y, ctx->idf("%c%c_LUT_FG", row_letter, col_letter)), id_LUT5, Loc(x, y, 0), false, false);
 
-    auto dff_qx_bel = ctx->addBel(h->xy_id(x, y, ctx->idf("%c%c_QX", row_letter, col_letter)), id_DFF, Loc(x, y, 1), false, false);
-    auto dff_qy_bel = ctx->addBel(h->xy_id(x, y, ctx->idf("%c%c_QY", row_letter, col_letter)), id_DFF, Loc(x, y, 2), false, false);
+    auto lut_f_bel = ctx->addBel(h->xy_id(x, y, ctx->idf("%c%c_LUT_F", row_letter, col_letter)), id_LUT4, Loc(x, y, 1), false, false);
+    auto dff_qx_bel = ctx->addBel(h->xy_id(x, y, ctx->idf("%c%c_QX", row_letter, col_letter)), id_DFF, Loc(x, y, 2), false, false);
 
+    auto lut_g_bel = ctx->addBel(h->xy_id(x, y, ctx->idf("%c%c_LUT_G", row_letter, col_letter)), id_LUT4, Loc(x, y, 3), false, false);
+    auto dff_qy_bel = ctx->addBel(h->xy_id(x, y, ctx->idf("%c%c_QY", row_letter, col_letter)), id_DFF, Loc(x, y, 4), false, false);
+
+    // LUT5 - FG
+    for(size_t i = 0; i < 5; i++) {
+        auto lut_wire = this->tile_wires[x][y][ctx->idf("DUMMY_LUT5_I%d", i)];
+        ctx->addBelInput(lut_fg_bel, ctx->idf("I%d", i), lut_wire);
+    }
+    ctx->addBelOutput(lut_fg_bel, id_F, this->tile_wires[x][y][ctx->idf("%c%c.F", row_letter, col_letter)]);
+
+    // TODO: LUT4 - F and G
+
+    // DFFs
+    ctx->addBelInput(dff_qx_bel, id_D, this->tile_wires[x][y][ctx->idf("%c%c.DX", row_letter, col_letter)]);
+    ctx->addBelInput(dff_qx_bel, id_C, this->tile_wires[x][y][ctx->idf("%c%c.K", row_letter, col_letter)]);
+    ctx->addBelInput(dff_qx_bel, id_EC, this->tile_wires[x][y][ctx->idf("%c%c.EC", row_letter, col_letter)]);
+    ctx->addBelInput(dff_qx_bel, id_RD, this->tile_wires[x][y][ctx->idf("%c%c.RD", row_letter, col_letter)]);
+    ctx->addBelOutput(dff_qx_bel, id_Q, this->tile_wires[x][y][ctx->idf("%c%c.QX", row_letter, col_letter)]);
+
+    ctx->addBelInput(dff_qy_bel, id_D, this->tile_wires[x][y][ctx->idf("%c%c.DY", row_letter, col_letter)]);
+    ctx->addBelInput(dff_qy_bel, id_C, this->tile_wires[x][y][ctx->idf("%c%c.K", row_letter, col_letter)]);
+    ctx->addBelInput(dff_qy_bel, id_EC, this->tile_wires[x][y][ctx->idf("%c%c.EC", row_letter, col_letter)]);
+    ctx->addBelInput(dff_qy_bel, id_RD, this->tile_wires[x][y][ctx->idf("%c%c.RD", row_letter, col_letter)]);
+    ctx->addBelOutput(dff_qy_bel, id_Q, this->tile_wires[x][y][ctx->idf("%c%c.QY", row_letter, col_letter)]);
+
+    // LUT Pips
+
+    // BQXQY and BQXQY pips
+    const char* bqxy_names[] = {"B", "QX", "QY"};
+    for(size_t i = 0; i < 3; i++) {
+        auto src_wire = this->tile_wires[x][y][ctx->idf("%c%c.%s", row_letter, col_letter, bqxy_names[i])];
+        auto dst_wire = this->tile_wires[x][y][ctx->idf("%c%c.BQXQY", row_letter, col_letter)];
+        ctx->addPip(IdStringList(ctx->idf("%c%c.LUT_FG.BQXQY:%s", row_letter, col_letter, bqxy_names[i])), id_CLB, src_wire, dst_wire, 0.1, Loc(x, y, 0));
+    }
+    const char* cqxy_names[] = {"C", "QX", "QY"};
+    for(size_t i = 0; i < 3; i++) {
+        auto src_wire = this->tile_wires[x][y][ctx->idf("%c%c.%s", row_letter, col_letter, cqxy_names[i])];
+        auto dst_wire = this->tile_wires[x][y][ctx->idf("%c%c.CQXQY", row_letter, col_letter)];
+        ctx->addPip(IdStringList(ctx->idf("%c%c.LUT_FG.CQXQY:%s", row_letter, col_letter, cqxy_names[i])), id_CLB, src_wire, dst_wire, 0.1, Loc(x, y, 0));
+    }
+
+    // LUT5 - FG Inputs -> reorder PIPs, allows the reordering of LUT5 inputs during routing
+    for(size_t i = 0; i < 5; i++) {
+        const char* src_names[] = {"A", "BQXQY", "CQXQY", "D", "E"};
+        for(size_t j = 0; j < 5; j++) {
+            auto src_id = ctx->idf("%c%c.%s", row_letter, col_letter, src_names[j]);
+            auto src_wire = this->tile_wires[x][y][src_id];
+            auto dst_wire = this->tile_wires[x][y][ctx->idf("DUMMY_LUT5_I%d", i)];
+            ctx->addPip(IdStringList(ctx->idf("%c%c.LUT_FG.DUMMY_I%d:%s", row_letter, col_letter, i, src_names[j])), id_DUMMY, src_wire, dst_wire, 0.1, Loc(x, y, 0));
+        }
+    }
+
+    // DFF Pips
+    // Select between F, G, and DI
+    const char* dff_in_names[] = {"F", "G", "DI"};
+    for(size_t i = 0; i < 3; i++) {
+        auto src_wire = this->tile_wires[x][y][ctx->idf("%c%c.%s", row_letter, col_letter, dff_in_names[i])];
+        auto dst_qx_wire = this->tile_wires[x][y][ctx->idf("%c%c.DX", row_letter, col_letter)];
+        auto dst_qy_wire = this->tile_wires[x][y][ctx->idf("%c%c.DY", row_letter, col_letter)];
+        ctx->addPip(IdStringList(ctx->idf("%c%c.DX:%s", row_letter, col_letter, dff_in_names[i])), id_CLB, src_wire, dst_qx_wire, 0.1, Loc(x, y, 0));
+        ctx->addPip(IdStringList(ctx->idf("%c%c.DY:%s", row_letter, col_letter, dff_in_names[i])), id_CLB, src_wire, dst_qy_wire, 0.1, Loc(x, y, 0));
+    }
+
+    // Output pips: For X only F/QX and G/QY valid -> need to reorder LUTs/FFs after routing
+    const char* out_names[] = {"F", "G", "QX", "QY"};
+    for(size_t i = 0; i < 4; i++) {
+        auto src_wire = this->tile_wires[x][y][ctx->idf("%c%c.%s", row_letter, col_letter, out_names[i])];
+        auto dst_x_wire = this->tile_wires[x][y][ctx->idf("%c%c.X", row_letter, col_letter)];
+        auto dst_y_wire = this->tile_wires[x][y][ctx->idf("%c%c.Y", row_letter, col_letter)];
+        ctx->addPip(IdStringList(ctx->idf("%c%c.X:%s", row_letter, col_letter, out_names[i])), id_CLB, src_wire, dst_x_wire, 0.1, Loc(x, y, 0));
+        ctx->addPip(IdStringList(ctx->idf("%c%c.Y:%s", row_letter, col_letter, out_names[i])), id_CLB, src_wire, dst_y_wire, 0.1, Loc(x, y, 0));
+    }
+
+    // Local Long Pips
+    const char* ports[] = {"A", "B", "C", "D", "E", "DI", "EC", "RD", "K", "X", "Y"};
+    for(size_t i = 0; i < 11; i++) {
+        std::string port_name = std::string(1, row_letter) + std::string(1, col_letter) + "." + ports[i];
+        if(this->clb_iob_local_long_pips.find(port_name) == this->clb_iob_local_long_pips.end())
+            continue;
+
+        for(std::string wire : this->clb_iob_local_long_pips[port_name]) {
+            // col.X.local is always the one in the current tile, except for X and Y
+            if(wire.find("col") != std::string::npos && wire.find("local") != std::string::npos) {
+                if(i < 9) {
+                    // Not X or Y
+                    auto src_wire = this->tile_wires[x][y][ctx->idf("%c%c.%s", row_letter, col_letter, ports[i])];
+                    auto dst_wire = this->tile_wires[x][y][ctx->id(wire)];
+                    if(dst_wire == WireId())
+                        continue;
+                    ctx->addPip(IdStringList(ctx->idf("%s:%c%c.%s", wire.c_str(), row_letter, col_letter, ports[i])), id_CLB, src_wire, dst_wire, 0.1, Loc(x, y, 0));
+                } else {
+                    // X or Y -> col from tile to the left -> x+1
+                    auto src_wire = this->tile_wires[x][y][ctx->idf("%c%c.%s", row_letter, col_letter, ports[i])];
+                    auto dst_wire = this->tile_wires[x+1][y][ctx->id(wire)];
+                    if(dst_wire == WireId())
+                        continue;
+                    ctx->addPip(IdStringList(ctx->idf("%s:%c%c.%s", wire.c_str(), row_letter, col_letter, ports[i])), id_CLB, src_wire, dst_wire, 0.1, Loc(x, y, 0));
+                }
+            }
+        }
+    }
+
+    // LUT Group
+    auto lut_group = GroupId(ctx->idf("%c%c_LUT", row_letter, col_letter));
+    ctx->addGroupBel(lut_group, lut_fg_bel);
+    ctx->addGroupBel(lut_group, lut_f_bel);
+    ctx->addGroupBel(lut_group, lut_g_bel);
+
+    // CLB Group
     auto clb_group = GroupId(ctx->idf("%c%c_CLB", row_letter, col_letter));
-
-    ctx->addGroupBel(clb_group, lut_bel);
+    ctx->addGroupGroup(clb_group, lut_group);
     ctx->addGroupBel(clb_group, dff_qx_bel);
     ctx->addGroupBel(clb_group, dff_qy_bel);
 
     if(this->with_gui) {
         const float clb_y = this->rows - y + 2;
+        ctx->setBelDecal(lut_fg_bel, x, clb_y, IdStringList(id_LUT));
+
         ctx->setGroupDecal(clb_group, x, clb_y, IdStringList(id_CLB));
-        ctx->setBelDecal(lut_bel,  x, clb_y, IdStringList(id_LUT));
         ctx->setBelDecal(dff_qx_bel, x, clb_y, IdStringList(id_DFF_QX));
         ctx->setBelDecal(dff_qy_bel, x, clb_y, IdStringList(id_DFF_QY));
     }
 }
 
 void xc3000::build_iob_at(size_t x, size_t y) {
+    enum iob_edge {TOP, RIGHT, BOTTOM, LEFT} edge;
     size_t pad_num = 0;
     if(y == 0) {
         // Top
+        edge = TOP;
         pad_num = x;
     } else if(x == this->cols + 2) {
         // Right
+        edge = RIGHT;
         pad_num = this->cols + y;
     } else if(y == this->rows + 2) {
         // Bottom
+        edge = BOTTOM;
         pad_num = this->rows + 2 * this->cols - x;
     } else if(x == 0) {
         // Left
+        edge = LEFT;
         pad_num = 2 * (this->rows + this->cols) - y;
     }
 
     auto iob1 = ctx->addBel(h->xy_id(x, y, ctx->idf("PAD%ld", pad_num * 2 - 1)), id_IOB, Loc(x, y, 0), false, false);
     auto iob2 = ctx->addBel(h->xy_id(x, y, ctx->idf("PAD%ld", pad_num * 2)), id_IOB, Loc(x, y, 1), false, false);
 
+    const char* port_names[] = {"I", "Q", "PAD", "O", "T"};
+    for(size_t i = 0; i < 4; i++) {
+        auto port_type = PORT_IN;
+        if(i < 2)
+            port_type = PORT_OUT;
+        if(i == 3)
+            port_type = PORT_INOUT;
+
+        auto wire1_id = ctx->idf("PAD%ld.%s", pad_num * 2 - 1, port_names[i]);
+        auto wire1 = ctx->addWire(h->xy_id(x, y, wire1_id), id_IOB, x, y);
+        this->tile_wires[x][y][wire1_id] = wire1;
+        ctx->addBelPin(iob1, ctx->idf("%s", port_names[i]), wire1, port_type);
+
+        auto wire2_id = ctx->idf("PAD%ld.%s", pad_num * 2, port_names[i]);
+        auto wire2 = ctx->addWire(h->xy_id(x, y, wire2_id), id_IOB, x, y);
+        this->tile_wires[x][y][wire2_id] = wire2;
+        ctx->addBelPin(iob2, ctx->idf("%s", port_names[i]), wire2, port_type);
+    }
+
     if(this->with_gui) {
         const float iob_y = this->rows - y + 2;
-        if(y == 0) {
-            // Top
-            ctx->setBelDecal(iob1, x, iob_y, IdStringList(id_IOB_TOP_BOTTOM_1));
-            ctx->setBelDecal(iob2, x, iob_y, IdStringList(id_IOB_TOP_BOTTOM_2));
-        } else if(x == this->cols + 2) {
-            // Right
-            ctx->setBelDecal(iob2, x, iob_y, IdStringList(id_IOB_LEFT_RIGHT_1));
-            ctx->setBelDecal(iob1, x, iob_y, IdStringList(id_IOB_LEFT_RIGHT_2));
-        } else if(y == this->rows + 2) {
-            // Bottom
-            ctx->setBelDecal(iob2, x, iob_y, IdStringList(id_IOB_TOP_BOTTOM_1));
-            ctx->setBelDecal(iob1, x, iob_y, IdStringList(id_IOB_TOP_BOTTOM_2));
-        } else if(x == 0) {
-            // Left
-            ctx->setBelDecal(iob1, x, iob_y, IdStringList(id_IOB_LEFT_RIGHT_1));
-            ctx->setBelDecal(iob2, x, iob_y, IdStringList(id_IOB_LEFT_RIGHT_2));
+        switch(edge) {
+            case TOP:
+                // Top
+                ctx->setBelDecal(iob1, x, iob_y, IdStringList(id_IOB_TOP_BOTTOM_1));
+                ctx->setBelDecal(iob2, x, iob_y, IdStringList(id_IOB_TOP_BOTTOM_2));
+                break;
+            case RIGHT:
+                // Right
+                ctx->setBelDecal(iob2, x, iob_y, IdStringList(id_IOB_LEFT_RIGHT_1));
+                ctx->setBelDecal(iob1, x, iob_y, IdStringList(id_IOB_LEFT_RIGHT_2));
+                break;
+            case BOTTOM:
+                // Bottom
+                ctx->setBelDecal(iob2, x, iob_y, IdStringList(id_IOB_TOP_BOTTOM_1));
+                ctx->setBelDecal(iob1, x, iob_y, IdStringList(id_IOB_TOP_BOTTOM_2));
+                break;
+            case LEFT:
+                // Left
+                ctx->setBelDecal(iob1, x, iob_y, IdStringList(id_IOB_LEFT_RIGHT_1));
+                ctx->setBelDecal(iob2, x, iob_y, IdStringList(id_IOB_LEFT_RIGHT_2));
+                break;
         }
     }
 }
@@ -397,6 +586,25 @@ void xc3000::build_tile_wires(size_t x, size_t y) {
     }
 }
 
+void xc3000::build_clb_wires(size_t x, size_t y) {
+    const char row_letter = idx_to_letter(y - 1);
+    const char col_letter = idx_to_letter(x - 1);
+
+    const char* port_names[] = {"DI", "A", "B", "C", "D", "E", "EC", "K", "RD", "X", "Y", "F", "G", "QX", "QY", "DX", "DY", "BQXQY", "CQXQY"};
+    for(size_t i = 0; i < 19; i++) {
+        auto wire_id = ctx->idf("%c%c.%s", row_letter, col_letter, port_names[i]);
+        auto wire = ctx->addWire(h->xy_id(x, y, wire_id), id_CLB, x, y);
+        this->tile_wires[x][y][wire_id] = wire;
+    }
+
+    // Temporary wires used as LUT5 inputs
+    for(size_t i = 0; i < 5; i++) {
+        auto wire_id = ctx->idf("DUMMY_LUT5_I%ld", i);
+        auto wire = ctx->addWire(h->xy_id(x, y, wire_id), id_CLB, x, y);
+        this->tile_wires[x][y][wire_id] = wire;
+    }
+}
+
 void xc3000::build_tiles() {
     // Build mesh
     enum TileType {
@@ -436,7 +644,11 @@ void xc3000::build_tiles() {
     this->tile_wires = std::vector<std::vector<std::map<IdString, WireId>>>(this->cols+3, std::vector<std::map<IdString, WireId>>(this->rows+3));
     for(size_t y = 0; y <= this->rows+2; y++) {
         for(size_t x = 0; x <= this->cols+2; x++) {
-            if(mesh[x][y] == TILE_CLB || mesh[x][y] == TILE_MAGIC_ONLY) {
+            if(mesh[x][y] == TILE_CLB) {
+                build_tile_wires(x, y);
+                build_clb_wires(x, y);
+            }
+            else if(mesh[x][y] == TILE_MAGIC_ONLY) {
                 build_tile_wires(x, y);
             }
         }
