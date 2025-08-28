@@ -8,6 +8,12 @@
 
 NEXTPNR_NAMESPACE_BEGIN
 
+#define LUT5_Z 0
+#define LUT_F_Z LUT5_Z + 1
+#define QX_Z LUT_F_Z + 1
+#define LUT_G_Z QX_Z + 1
+#define QY_Z LUT_G_Z + 1
+
 class xc3000 {
 public:
     void init_device(Context* ctx, ViaductHelpers* h, std::string device, bool with_gui);
