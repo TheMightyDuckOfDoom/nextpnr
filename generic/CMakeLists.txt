@@ -27,11 +27,17 @@ set(SOURCES
     viaduct/fabulous/validity_check.h
     viaduct/okami/constids.inc
     viaduct/okami/okami.cc
+    viaduct/xcxk/constids.inc
+    viaduct/xcxk/xc3000.cc
+    viaduct/xcxk/xc3000.h
+    viaduct/xcxk/xcxk.cc
 )
 
 add_nextpnr_architecture(${family}
     CORE_SOURCES ${SOURCES}
     MAIN_SOURCE  main.cc
 )
+
+add_subdirectory(viaduct/xcxk)
 
 target_sources(nextpnr-${family}-chipdb PUBLIC chipdb.cc)
