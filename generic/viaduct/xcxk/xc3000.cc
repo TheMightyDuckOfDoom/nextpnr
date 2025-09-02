@@ -121,11 +121,40 @@ void xc3000::read_device(std::string device) {
 
         this->clb_iob_local_long_pips[iob_port].push_back(wire);
     }
+
+    // CLB Direct Pips
+    path = get_path(device, "CLB_DIRECT.txt");
+    std::ifstream if_clb_direct(path);
+
+    if(!if_clb_direct.is_open()) {
+        log_error("Unable to open %s\n", path.c_str());
+    }
+
+    while(getline(if_clb_direct, line)) {
+        if(line.find("\n") != std::string::npos)
+            line = line.replace(line.find_first_of("\n"), 1, "");
+        if(line == "")
+            continue;
+
+        std::string clb_port = line.substr(0, line.find_first_of(" "));
+        std::string wire = line.substr(line.find_first_of(":") + 1, -1);
+        
+        log_info("CLB Direct: %s -> %s\n", clb_port.c_str(), wire.c_str());
+        if(this->clb_iob_direct_pips.find(clb_port) == this->clb_iob_direct_pips.end())
+            this->clb_iob_direct_pips[clb_port] = std::vector<std::string>();
+
+        this->clb_iob_direct_pips[clb_port].push_back(wire);
+    }
 }
 
 char idx_to_letter(size_t idx) {
     assert(idx < 26);
     return (char)('A' + idx);
+}
+
+size_t letter_to_idx(char letter) {
+    assert(letter >= 'A' && letter <= 'Z');
+    return (size_t)(letter - 'A');
 }
 
 void xc3000::get_magic_decal_coord(size_t wire, float& x, float& y) {
@@ -426,27 +455,49 @@ void xc3000::build_clb_at(size_t x, size_t y) {
 
         for(std::string wire : this->clb_iob_local_long_pips[port_name]) {
             // col.X.local is always the one in the current tile, except for X and Y
-            if(wire.find("col") != std::string::npos && wire.find("local") != std::string::npos) {
-                size_t local_wire_num = std::stoi(wire.substr(12, wire.find_first_of(":") - 12));
-                log_info("Local wire num: %ld\n", local_wire_num);
-                if(local_wire_num >= 1 && local_wire_num <= 5) {
-                    if(i < 9) {
-                        // Not X or Y -> from local to pin
-                        auto src_wire = this->tile_wires[x][y][ctx->id(wire)];
-                        auto dst_wire = this->tile_wires[x][y][ctx->idf("%c%c.%s", row_letter, col_letter, ports[i])];
-                        if(src_wire == WireId())
-                            continue;
-                        ctx->addPip(IdStringList(ctx->idf("%s:%c%c.%s", wire.c_str(), row_letter, col_letter, ports[i])), id_CLB, src_wire, dst_wire, 0.1, Loc(x, y, 0));
-                    } else {
-                        // X or Y -> col from tile to the left -> x+1 -> from pin to local
-                        auto src_wire = this->tile_wires[x][y][ctx->idf("%c%c.%s", row_letter, col_letter, ports[i])];
-                        auto dst_wire = this->tile_wires[x+1][y][ctx->id(wire)];
-                        if(dst_wire == WireId())
-                            continue;
-                        ctx->addPip(IdStringList(ctx->idf("%s:%c%c.%s", wire.c_str(), row_letter, col_letter, ports[i])), id_CLB, src_wire, dst_wire, 0.1, Loc(x, y, 0));
+            if(wire.find("local") != std::string::npos) {
+                if(wire.find("col") != std::string::npos) {
+                    // Columns
+                    size_t local_wire_num = std::stoi(wire.substr(12, wire.find_first_of(":") - 12));
+                    if(local_wire_num >= 1 && local_wire_num <= 5) {
+                        if(i < 9) {
+                            // Not X or Y -> from local to pin
+                            auto src_wire = this->tile_wires[x][y][ctx->id(wire)];
+                            auto dst_wire = this->tile_wires[x][y][ctx->idf("%c%c.%s", row_letter, col_letter, ports[i])];
+                            if(src_wire == WireId())
+                                continue;
+                            ctx->addPip(IdStringList(ctx->idf("%s:%c%c.%s", wire.c_str(), row_letter, col_letter, ports[i])), id_CLB, src_wire, dst_wire, 0.1, Loc(x, y, 0));
+                        } else {
+                            // X or Y -> col from tile to the left -> x+1 -> from pin to local
+                            auto src_wire = this->tile_wires[x][y][ctx->idf("%c%c.%s", row_letter, col_letter, ports[i])];
+                            auto dst_wire = this->tile_wires[x+1][y][ctx->id(wire)];
+                            if(dst_wire == WireId())
+                                continue;
+                            ctx->addPip(IdStringList(ctx->idf("%s:%c%c.%s", wire.c_str(), row_letter, col_letter, ports[i])), id_CLB, src_wire, dst_wire, 0.1, Loc(x, y, 0));
+                        }
                     }
                 }
+
+                // TODO: row.local
+                // row.X.local.6 connects below Y to this D, but I cannot find it
             }
+        }
+    }
+
+    // Direct Pips
+    const char* direct_ports[] = {"X", "Y"};
+    for(size_t i = 0; i < 2; i++) {
+        std::string port_name = std::string(1, row_letter) + std::string(1, col_letter) + "." + direct_ports[i];
+        auto src_wire = this->tile_wires[x][y][ctx->idf("%s", port_name.c_str())];
+        log_info("Direct Pips for %s\n", port_name.c_str());
+        for(std::string dst_wire_name : this->clb_iob_direct_pips[port_name]) {
+            size_t dst_y = letter_to_idx(dst_wire_name[0]) + 1;
+            size_t dst_x = letter_to_idx(dst_wire_name[1]) + 1;
+
+            log_info("  -> %s at %ld,%ld\n", dst_wire_name.c_str(), dst_x, dst_y);
+
+            auto dst_wire = this->tile_wires[dst_x][dst_y][ctx->id(dst_wire_name)];
+            ctx->addPip(IdStringList(ctx->idf("%s:%s", port_name.c_str(), dst_wire_name.c_str())), id_CLB, src_wire, dst_wire, 0.1, Loc(x, y, 0));
         }
     }
 

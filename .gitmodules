@@ -7,3 +7,6 @@
 [submodule "3rdparty/corrosion"]
 	path = 3rdparty/corrosion
 	url = https://github.com/corrosion-rs/corrosion
+[submodule "generic/viaduct/xcxk/projectXCxk"]
+	path = generic/viaduct/xcxk/projectXCxk
+	url = git@github.com:TheMightyDuckOfDoom/projectXCxk.git

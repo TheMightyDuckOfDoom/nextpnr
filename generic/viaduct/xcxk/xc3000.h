@@ -21,6 +21,7 @@ public:
 private:
     std::map<std::string, std::vector<std::string>> magic_connections;
     std::map<std::string, std::vector<std::string>> clb_iob_local_long_pips;
+    std::map<std::string, std::vector<std::string>> clb_iob_direct_pips;
     std::vector<std::vector<std::map<IdString, WireId>>> tile_wires;
 
     // Graphics settings
